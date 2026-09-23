@@ -27,6 +27,15 @@ interface AudioTTSStudioProps {
   onOpenVoiceModelConfig?: () => void;
 }
 
+/** Google Gemini 官方 Voice ID（硬性约束 #5：仅用于 gemini 引擎，绝不发给 Qwen） */
+const GEMINI_VOICES = [
+  { id: 'Kore', name: 'Kore', tag: '沉稳睿智', desc: '权威有深度的男中音，适合纪录片、科技发布与讲座', gender: '男声' },
+  { id: 'Puck', name: 'Puck', tag: '活力轻快', desc: '热情朝气的高频男声，适合播客、短视频与广告推广', gender: '男声' },
+  { id: 'Fenrir', name: 'Fenrir', tag: '磁性厚重', desc: '极具穿透力与叙事感的电影级重低音声线', gender: '男声' },
+  { id: 'Charon', name: 'Charon', tag: '专业播报', desc: '咬字清晰干练的播音级声线，适合新闻与商业报告', gender: '男声' },
+  { id: 'Zephyr', name: 'Zephyr', tag: '温暖知性', desc: '柔和细腻充满共情力的声线，适合有声书与冥想伴读', gender: '女声' },
+];
+
 export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
   folders,
   onSaveToLibrary,
@@ -62,6 +71,37 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
     return () => window.removeEventListener('voice-model-config-updated', handleConfigUpdate);
   }, []);
 
+  // 硬性约束 #5/#6：Qwen 官方音色目录来自 /api/voice-model/status（Worker 模型运行时），
+  // 与 Google Voice 目录彻底分开；Worker 未启动时如实为空
+  const [qwenVoices, setQwenVoices] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    fetch('/api/voice-model/status')
+      .then(r => r.json())
+      .then(d => setQwenVoices(d?.voices?.qwen3Tts ?? []))
+      .catch(() => setQwenVoices([]));
+  }, []);
+
+  const isQwenEngine = modelConfig.ttsModel === 'qwen3-tts-local';
+  const voiceOptions = isQwenEngine
+    ? qwenVoices.map(v => ({
+        id: v.id,
+        name: v.name,
+        tag: '官方ID',
+        desc: 'Qwen3-TTS 官方音色（来自引擎运行时目录，ID 精确匹配）',
+        gender: '官方',
+      }))
+    : GEMINI_VOICES;
+
+  // 引擎切换后，当前声线若不属于该引擎目录则重置为目录首项
+  useEffect(() => {
+    const ids = voiceOptions.map(v => v.id);
+    if (ids.length === 0) return;
+    if (!ids.includes(selectedVoice)) setSelectedVoice(ids[0]);
+    if (!ids.includes(speaker1Voice)) setSpeaker1Voice(ids[0]);
+    if (!ids.includes(speaker2Voice)) setSpeaker2Voice(ids[1] || ids[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isQwenEngine, qwenVoices.length]);
+
   const [isGenerating, setIsGenerating] = useState(false);
   // 诚实失败（硬性约束 #2）：引擎失败时展示真实原因，不再生成三角波假旁白
   const [generationError, setGenerationError] = useState<string | null>(null);
@@ -80,14 +120,6 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [selectedFolderId, setSelectedFolderId] = useState<string>(folders[0]?.id || '');
   const [assetTitle, setAssetTitle] = useState('');
-
-  const voices = [
-    { id: 'Kore', name: 'Kore', tag: '沉稳睿智', desc: '权威有深度的男中音，适合纪录片、科技发布与讲座', gender: '男声' },
-    { id: 'Puck', name: 'Puck', tag: '活力轻快', desc: '热情朝气的高频男声，适合播客、短视频与广告推广', gender: '男声' },
-    { id: 'Fenrir', name: 'Fenrir', tag: '磁性厚重', desc: '极具穿透力与叙事感的电影级重低音声线', gender: '男声' },
-    { id: 'Charon', name: 'Charon', tag: '专业播报', desc: '咬字清晰干练的播音级声线，适合新闻与商业报告', gender: '男声' },
-    { id: 'Zephyr', name: 'Zephyr', tag: '温暖知性', desc: '柔和细腻充满共情力的声线，适合有声书与冥想伴读', gender: '女声' },
-  ];
 
   const emotions = [
     { label: '沉稳专业', prompt: 'calm and professional news tone' },
@@ -321,9 +353,17 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
           <div>
             <label className="text-xs font-semibold text-neutral-300 uppercase tracking-wider block mb-2">
               选择AI声线 (Voice Model)
+              <span className="ml-2 text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral-800 text-cyan-300">
+                {isQwenEngine ? 'Qwen 官方目录' : 'Google Voice'}
+              </span>
             </label>
+            {isQwenEngine && voiceOptions.length === 0 && (
+              <p className="text-xs text-amber-300/90 bg-amber-950/20 border border-amber-500/30 rounded-lg px-3 py-2 mb-2">
+                Worker 未启动或音色目录未加载：请先双击 worker/「启动Worker.command」，刷新页面后自动加载官方音色。
+              </p>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-              {voices.map((v) => {
+              {voiceOptions.map((v) => {
                 const isSelected = selectedVoice === v.id;
                 return (
                   <div
@@ -360,7 +400,7 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
                 onChange={(e) => setSpeaker1Voice(e.target.value)}
                 className="w-full bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2 text-xs text-neutral-200 focus:outline-none focus:border-indigo-500"
               >
-                {voices.map(v => (
+                {voiceOptions.map(v => (
                   <option key={v.id} value={v.id}>{v.name} ({v.tag} - {v.gender})</option>
                 ))}
               </select>
@@ -375,7 +415,7 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
                 onChange={(e) => setSpeaker2Voice(e.target.value)}
                 className="w-full bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2 text-xs text-neutral-200 focus:outline-none focus:border-indigo-500"
               >
-                {voices.map(v => (
+                {voiceOptions.map(v => (
                   <option key={v.id} value={v.id}>{v.name} ({v.tag} - {v.gender})</option>
                 ))}
               </select>
