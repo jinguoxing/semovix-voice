@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
-import { 
-  X, 
-  FileText, 
-  Sparkles, 
-  Check, 
-  RefreshCw, 
-  Smile, 
-  Tag, 
-  Copy, 
-  Save 
+import {
+  X,
+  FileText,
+  Sparkles,
+  Check,
+  RefreshCw,
+  Smile,
+  Tag,
+  Copy,
+  Save,
+  AlertTriangle
 } from 'lucide-react';
 import { AudioItem } from '../types/audio';
 import { getVoiceModelConfig } from '../utils/voiceModelConfig';
@@ -32,9 +33,12 @@ export const AudioTranscribeModal: React.FC<AudioTranscribeModalProps> = ({
   const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
   const [copied, setCopied] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  // 诚实失败（硬性约束 #3）：引擎失败时展示真实原因，不再写入模拟转录文本
+  const [error, setError] = useState<string | null>(null);
 
   const handleTranscribe = async () => {
     setIsTranscribing(true);
+    setError(null);
     try {
       // Fetch audio base64
       const response = await fetch(item.audioUrl);
@@ -54,25 +58,27 @@ export const AudioTranscribeModal: React.FC<AudioTranscribeModalProps> = ({
             }),
           });
           const data = await res.json();
-          if (data.transcript) {
+          if (res.ok && data.success && data.transcript) {
             setTranscript(data.transcript);
             setSummary(data.summary || '');
             setMood(data.mood || '清晰自然');
             setSuggestedTags(data.tags || ['人声', '清晰']);
+          } else {
+            // 引擎不可用/失败：如实展示服务端错误，不落任何模拟文字稿
+            setError(data.error || `转录失败（HTTP ${res.status}${data.code ? ` · ${data.code}` : ''}）。`);
           }
-        } catch (e) {
-          console.error('Transcription error', e);
-          setTranscript('（转录完成：语音音质优良，基频平稳，适合用作语音或旁白素材）');
-          setMood('自然平缓');
-          setSuggestedTags(['人声', '旁白', '自然']);
+        } catch (e: any) {
+          console.error('Transcription request failed:', e);
+          setError(`转录请求失败：${e?.message || '网络错误'}。请确认引擎服务已启动。`);
         } finally {
           setIsTranscribing(false);
         }
       };
 
       reader.readAsDataURL(blob);
-    } catch (err) {
-      console.error('File read error', err);
+    } catch (err: any) {
+      console.error('Audio fetch failed:', err);
+      setError(`音频读取失败：${err?.message || '网络错误'}。`);
       setIsTranscribing(false);
     }
   };
@@ -123,8 +129,26 @@ export const AudioTranscribeModal: React.FC<AudioTranscribeModalProps> = ({
           </button>
         </div>
 
-        {/* Start button or Trigger */}
-        {!transcript && !isTranscribing ? (
+        {/* Honest Failure View：真实失败原因 + 重试（硬性约束 #3） */}
+        {error && !isTranscribing ? (
+          <div className="text-center py-8 space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <p className="text-sm font-semibold text-rose-200">转录失败</p>
+            <p className="text-xs text-neutral-400 max-w-sm mx-auto break-words">{error}</p>
+            <p className="text-[11px] text-neutral-500">
+              提示：本地转录需先启动 Whisper-ASR「启动网页版.command」；云端转录需在配置中填写 Gemini API key。
+            </p>
+            <button
+              onClick={handleTranscribe}
+              className="px-6 py-2.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-950/50 flex items-center gap-2 mx-auto transition-all active:scale-95"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>重试转录</span>
+            </button>
+          </div>
+        ) : !transcript && !isTranscribing ? (
           <div className="text-center py-8 space-y-3">
             <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto">
               <Sparkles className="w-6 h-6 animate-pulse" />

@@ -14,10 +14,10 @@ import {
   Check,
   FileCheck,
   Sliders,
-  Cpu
+  Cpu,
+  AlertTriangle
 } from 'lucide-react';
 import { AudioItem, AudioFolder } from '../types/audio';
-import { extractPeaks, audioBufferToWav, getAudioContext } from '../utils/audioEngine';
 import { getVoiceModelConfig, VoiceModelConfig } from '../utils/voiceModelConfig';
 
 interface AudioTTSStudioProps {
@@ -63,6 +63,8 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
   }, []);
 
   const [isGenerating, setIsGenerating] = useState(false);
+  // 诚实失败（硬性约束 #2）：引擎失败时展示真实原因，不再生成三角波假旁白
+  const [generationError, setGenerationError] = useState<string | null>(null);
   const [generatedAudio, setGeneratedAudio] = useState<{
     audioUrl: string;
     blob?: Blob;
@@ -117,6 +119,7 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
   const handleGenerate = async () => {
     setIsGenerating(true);
     setSaveSuccess(false);
+    setGenerationError(null);
 
     const promptText = mode === 'single' ? text : dialogueText;
     const defaultTitle = mode === 'single' 
@@ -145,9 +148,9 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
 
       const data = await response.json();
 
-      if (data.fallbackRequired || !data.audioUrl) {
-        // High quality web speech synthesis fallback or simulated render
-        await generateWebSpeechFallback(promptText, selectedVoice);
+      // 诚实失败：任何"未生成音频"的服务器应答都如实展示原因，不再本地伪造（硬性约束 #2）
+      if (!response.ok || data.error || data.fallbackRequired || !data.audioUrl) {
+        setGenerationError(data.error || data.message || `语音生成失败（HTTP ${response.status}）。`);
         return;
       }
 
@@ -165,57 +168,12 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
         voice: selectedVoice,
       });
       setAssetTitle(defaultTitle);
-    } catch (err) {
-      console.warn('API error, using browser synthesis fallback', err);
-      await generateWebSpeechFallback(promptText, selectedVoice);
+    } catch (err: any) {
+      console.error('Speech generation request failed:', err);
+      setGenerationError(`语音生成请求失败：${err?.message || '网络错误'}。请检查引擎服务是否已启动。`);
     } finally {
       setIsGenerating(false);
     }
-  };
-
-  /**
-   * Browser Web Audio / Speech Synthesis Fallback
-   */
-  const generateWebSpeechFallback = async (speechText: string, voiceName: string) => {
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(speechText);
-      utterance.lang = 'zh-CN';
-      utterance.rate = 1.0;
-      window.speechSynthesis.speak(utterance);
-    }
-
-    // Generate a fallback synthetic audio tone so user still gets a real playable wav asset
-    const ctx = getAudioContext();
-    const duration = Math.min(6, Math.max(2, speechText.length * 0.25));
-    const sampleRate = 44100;
-    const offline = new OfflineAudioContext(1, sampleRate * duration, sampleRate);
-    
-    const osc = offline.createOscillator();
-    const gain = offline.createGain();
-    osc.frequency.setValueAtTime(180, 0);
-    osc.type = 'triangle';
-    gain.gain.setValueAtTime(0.5, 0);
-    gain.gain.exponentialRampToValueAtTime(0.001, duration);
-    osc.connect(gain);
-    gain.connect(offline.destination);
-    osc.start(0);
-    osc.stop(duration);
-
-    const buffer = await offline.startRendering();
-    const blob = audioBufferToWav(buffer);
-    const audioUrl = URL.createObjectURL(blob);
-
-    const defaultTitle = `AI配音-${voiceName}-${speechText.slice(0, 10)}...`;
-    setGeneratedAudio({
-      audioUrl,
-      blob,
-      duration,
-      sampleRate,
-      title: defaultTitle,
-      text: speechText,
-      voice: voiceName,
-    });
-    setAssetTitle(defaultTitle);
   };
 
   const togglePreviewPlay = () => {
@@ -505,6 +463,24 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
             )}
           </button>
         </div>
+
+        {/* Honest Failure Card：展示真实失败原因，不伪造音频（硬性约束 #1/#2） */}
+        {generationError && (
+          <div className="bg-rose-950/30 border border-rose-500/40 rounded-2xl p-4 space-y-2 animate-fadeIn">
+            <div className="flex items-start gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-rose-500/15 text-rose-400 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div className="space-y-1 min-w-0">
+                <h4 className="text-sm font-bold text-rose-200">语音生成失败</h4>
+                <p className="text-xs text-rose-200/80 leading-relaxed break-words">{generationError}</p>
+                <p className="text-[11px] text-neutral-400">
+                  提示：云端引擎需在配置中填写 Gemini API key；本地引擎需先启动 Qwen3-TTS「启动网页版.command」。
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Generated Result Card */}
         {generatedAudio && (
