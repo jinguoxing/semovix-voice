@@ -1,52 +1,57 @@
 /**
- * AudioCraft Studio - Server-side Library Store
- * 音频文件落磁盘 (library/files/)，元数据存 SQLite (library/library.db)
+ * Semovix Voice Studio - 素材库持久化
+ * 音频文件落磁盘 (<libraryDir>/files/)，元数据存 SQLite (<libraryDir>/library.db)。
+ * 自 server.ts 原样迁移；DDL 在 P1-c4 抽入版本化迁移。
  */
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { getConfig } from '../config';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+export function libraryDirs(): { root: string; files: string; dbPath: string } {
+  const root = getConfig().libraryDir;
+  return { root, files: path.join(root, 'files'), dbPath: path.join(root, 'library.db') };
+}
 
-export const LIBRARY_ROOT = path.resolve(__dirname, 'library');
-export const FILES_DIR = path.join(LIBRARY_ROOT, 'files');
-const DB_PATH = path.join(LIBRARY_ROOT, 'library.db');
+let db: Database.Database | null = null;
 
-fs.mkdirSync(FILES_DIR, { recursive: true });
+export function getDb(): Database.Database {
+  if (db) return db;
+  const { files, dbPath } = libraryDirs();
+  fs.mkdirSync(files, { recursive: true });
+  db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
 
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS items (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    description TEXT,
-    category TEXT,
-    duration REAL,
-    sampleRate INTEGER,
-    channels INTEGER,
-    format TEXT,
-    fileSize INTEGER,
-    createdAt TEXT,
-    updatedAt TEXT,
-    tags TEXT,          -- JSON string[]
-    rating INTEGER,
-    folderId TEXT,
-    transcript TEXT,
-    waveformData TEXT,  -- JSON number[]
-    metadata TEXT,      -- JSON object
-    fileName TEXT
-  );
-  CREATE TABLE IF NOT EXISTS folders (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    color TEXT,
-    createdAt TEXT
-  );
-`);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS items (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT,
+      category TEXT,
+      duration REAL,
+      sampleRate INTEGER,
+      channels INTEGER,
+      format TEXT,
+      fileSize INTEGER,
+      createdAt TEXT,
+      updatedAt TEXT,
+      tags TEXT,          -- JSON string[]
+      rating INTEGER,
+      folderId TEXT,
+      transcript TEXT,
+      waveformData TEXT,  -- JSON number[]
+      metadata TEXT,      -- JSON object
+      fileName TEXT
+    );
+    CREATE TABLE IF NOT EXISTS folders (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      color TEXT,
+      createdAt TEXT
+    );
+  `);
+  return db;
+}
 
 export interface LibraryItemRow {
   id: string;
@@ -110,11 +115,11 @@ function rowToItem(row: LibraryItemRow): any {
 /* ---------------- Items ---------------- */
 
 export function listItems(): any[] {
-  return (db.prepare('SELECT * FROM items ORDER BY createdAt DESC').all() as LibraryItemRow[]).map(rowToItem);
+  return (getDb().prepare('SELECT * FROM items ORDER BY createdAt DESC').all() as LibraryItemRow[]).map(rowToItem);
 }
 
 export function getItem(id: string): any | null {
-  const row = db.prepare('SELECT * FROM items WHERE id = ?').get(id) as LibraryItemRow | undefined;
+  const row = getDb().prepare('SELECT * FROM items WHERE id = ?').get(id) as LibraryItemRow | undefined;
   return row ? rowToItem(row) : null;
 }
 
@@ -126,7 +131,7 @@ function itemFileName(id: string, format: string): string {
 export function saveItem(item: any): any {
   assertSafeId(String(item.id));
   const fileName = itemFileName(item.id, item.format);
-  db.prepare(`
+  getDb().prepare(`
     INSERT INTO items (id, title, description, category, duration, sampleRate, channels, format,
                        fileSize, createdAt, updatedAt, tags, rating, folderId, transcript,
                        waveformData, metadata, fileName)
@@ -170,10 +175,10 @@ export function updateItem(id: string, updates: Record<string, any>): any | null
 
 export function deleteItem(id: string): boolean {
   assertSafeId(id);
-  const row = db.prepare('SELECT fileName FROM items WHERE id = ?').get(id) as { fileName?: string } | undefined;
+  const row = getDb().prepare('SELECT fileName FROM items WHERE id = ?').get(id) as { fileName?: string } | undefined;
   if (!row) return false;
-  db.prepare('DELETE FROM items WHERE id = ?').run(id);
-  const filePath = path.join(FILES_DIR, row.fileName || itemFileName(id, 'wav'));
+  getDb().prepare('DELETE FROM items WHERE id = ?').run(id);
+  const filePath = path.join(libraryDirs().files, row.fileName || itemFileName(id, 'wav'));
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
   return true;
 }
@@ -181,15 +186,15 @@ export function deleteItem(id: string): boolean {
 export function writeItemFile(id: string, format: string, data: Buffer): { fileName: string; size: number } {
   assertSafeId(id);
   const fileName = itemFileName(id, format);
-  fs.writeFileSync(path.join(FILES_DIR, fileName), data);
+  fs.writeFileSync(path.join(libraryDirs().files, fileName), data);
   return { fileName, size: data.length };
 }
 
 export function readItemFile(id: string): { filePath: string; fileName: string } | null {
   assertSafeId(id);
-  const row = db.prepare('SELECT fileName FROM items WHERE id = ?').get(id) as { fileName?: string } | undefined;
+  const row = getDb().prepare('SELECT fileName FROM items WHERE id = ?').get(id) as { fileName?: string } | undefined;
   if (!row?.fileName) return null;
-  const filePath = path.join(FILES_DIR, row.fileName);
+  const filePath = path.join(libraryDirs().files, row.fileName);
   if (!fs.existsSync(filePath)) return null;
   return { filePath, fileName: row.fileName };
 }
@@ -205,20 +210,20 @@ const DEFAULT_FOLDERS = [
 
 export function listFolders(): any[] {
   seedFoldersIfEmpty();
-  return db.prepare('SELECT * FROM folders ORDER BY createdAt ASC').all() as any[];
+  return getDb().prepare('SELECT * FROM folders ORDER BY createdAt ASC').all() as any[];
 }
 
 function seedFoldersIfEmpty(): void {
-  const count = (db.prepare('SELECT COUNT(*) AS c FROM folders').get() as { c: number }).c;
+  const count = (getDb().prepare('SELECT COUNT(*) AS c FROM folders').get() as { c: number }).c;
   if (count > 0) return;
-  const insert = db.prepare('INSERT INTO folders (id, name, color, createdAt) VALUES (?, ?, ?, ?)');
+  const insert = getDb().prepare('INSERT INTO folders (id, name, color, createdAt) VALUES (?, ?, ?, ?)');
   const now = new Date().toISOString();
   for (const f of DEFAULT_FOLDERS) insert.run(f.id, f.name, f.color, now);
 }
 
 export function saveFolder(folder: { id: string; name: string; color?: string; createdAt?: string }): any {
   assertSafeId(folder.id);
-  db.prepare(`
+  getDb().prepare(`
     INSERT INTO folders (id, name, color, createdAt) VALUES (@id, @name, @color, @createdAt)
     ON CONFLICT(id) DO UPDATE SET name=@name, color=@color
   `).run({
@@ -227,19 +232,19 @@ export function saveFolder(folder: { id: string; name: string; color?: string; c
     color: folder.color ?? '#6366f1',
     createdAt: folder.createdAt ?? new Date().toISOString(),
   });
-  return db.prepare('SELECT * FROM folders WHERE id = ?').get(folder.id);
+  return getDb().prepare('SELECT * FROM folders WHERE id = ?').get(folder.id);
 }
 
 export function deleteFolder(id: string): void {
   assertSafeId(id);
-  db.prepare('DELETE FROM folders WHERE id = ?').run(id);
+  getDb().prepare('DELETE FROM folders WHERE id = ?').run(id);
   // 素材保留，归入未分类
-  db.prepare('UPDATE items SET folderId = NULL WHERE folderId = ?').run(id);
+  getDb().prepare('UPDATE items SET folderId = NULL WHERE folderId = ?').run(id);
 }
 
 export function replaceFolders(folders: any[]): any[] {
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM folders').run();
+  const tx = getDb().transaction(() => {
+    getDb().prepare('DELETE FROM folders').run();
     for (const f of folders) saveFolder(f);
   });
   tx();
