@@ -3,8 +3,9 @@
  * P2：模型白名单 + 统一错误结构；引擎不可用/未配置时如实失败，不再回退伪造。
  */
 import { Router } from 'express';
-import { resolveTtsAdapter, SUPPORTED_TTS_MODELS, UnsupportedTtsModelError } from '../engines/tts';
+import { resolveTtsAdapter } from '../engines/tts';
 import { hasGeminiApiKey } from '../engines/geminiClient';
+import { EngineValidationError } from '../engines/errors';
 import { fail } from './respond';
 
 export const generateSpeechRouter = Router();
@@ -39,8 +40,8 @@ generateSpeechRouter.post('/generate-speech', async (req, res) => {
     try {
       adapter = resolveTtsAdapter(ttsModel);
     } catch (e) {
-      if (e instanceof UnsupportedTtsModelError) {
-        return fail(res, 400, e.message, e.code, { supportedModels: SUPPORTED_TTS_MODELS });
+      if (e instanceof EngineValidationError) {
+        return fail(res, 400, e.message, e.code, e.details); // e.g. unsupported_tts_model / unsupported_speaker
       }
       throw e;
     }
@@ -63,6 +64,10 @@ generateSpeechRouter.post('/generate-speech', async (req, res) => {
         speakers,
       });
     } catch (e: any) {
+      if (e instanceof EngineValidationError) {
+        // 引擎侧业务校验失败（如非官方 Qwen speaker ID，硬性约束 #6）
+        return fail(res, 400, e.message, e.code, e.details);
+      }
       // 引擎调用失败：如实上报 502，不降级、不伪造音频（硬性约束 #1/#2）
       console.error(`TTS engine ${adapter.id} failed:`, e.message);
       return fail(res, 502, e.message || 'TTS engine call failed.', 'tts_engine_failed', { engine: adapter.id });

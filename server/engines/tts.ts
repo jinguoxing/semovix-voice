@@ -1,13 +1,16 @@
 /**
- * TTS Engine Adapter Layer (可插拔语音引擎)（自 server.ts 原样迁移）
+ * TTS Engine Adapter Layer (可插拔语音引擎)
  * 每个本地/云端引擎实现同一个接口；按请求里的 ttsModel 路由。
+ * P3：本地 Qwen3-TTS 改经 Python FastAPI Worker（硬性约束 #14），
+ *     音色使用官方精确 ID，删除 persona→speaker 映射（硬性约束 #5/#6）。
  * 新增引擎：实现 TTSEngineAdapter → push 进 ttsAdapters → 前端模型列表加一项。
  */
 import { Modality } from '@google/genai';
-import { getConfig } from '../config';
-import { pcmToWavBuffer, wavDuration, concatWavBuffers } from '../audio/wav';
+import { pcmToWavBuffer, wavDuration, concatWavBuffers, parseWav } from '../audio/wav';
 import { applySpeedToWav } from '../audio/wsola';
 import { getGeminiClient, hasGeminiApiKey } from './geminiClient';
+import { EngineValidationError } from './errors';
+import { workerHealth, qwenVoiceCatalog, qwenWorkerSynthesize, resolveQwenSpeaker } from './qwenWorker';
 
 export interface TTSSynthesizeRequest {
   text: string;
@@ -126,18 +129,7 @@ export const geminiAdapter: TTSEngineAdapter = {
   },
 };
 
-/* ---------- Adapter: 本地 Qwen3-TTS (经 Gradio HTTP 服务) ---------- */
-
-const QWEN_SAMPLE_RATE = 24000;
-
-// UI 音色 persona → Qwen speaker（音色来自模型 get_supported_speakers）
-const QWEN_VOICE_MAP: Record<string, string> = {
-  Kore: 'Eric',       // 权威男中音
-  Puck: 'Aiden',      // 朝气男高音
-  Fenrir: 'Uncle Fu', // 电影级重低音
-  Charon: 'Ryan',     // 播音级标准音
-  Zephyr: 'Vivian',   // 知性疗愈女声
-};
+/* ---------- Adapter: 本地 Qwen3-TTS（经 Python FastAPI Worker，硬性约束 #14） ---------- */
 
 const QWEN_EMOTION_INSTRUCT: Record<string, string> = {
   沉稳专业: '用沉稳、专业、清晰的语气朗读，语速适中。',
@@ -154,80 +146,25 @@ function toQwenInstruct(emotion?: string, systemInstruction?: string): string | 
   return parts.length ? parts.join(' ') : null;
 }
 
-/** 调 Gradio /run_instruct 合成一段音频，返回完整 WAV Buffer */
-async function qwenGradioSynthesizeOnce(text: string, speaker: string, instruct: string | null): Promise<Buffer> {
-  const QWEN_GRADIO_BASE = getConfig().qwenTtsUrl;
-  const submitRes = await fetch(`${QWEN_GRADIO_BASE}/gradio_api/call/run_instruct`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data: [text, 'Auto', speaker, instruct] }),
-  });
-  if (!submitRes.ok) {
-    throw new Error(`本地 Qwen3-TTS 服务提交失败 (HTTP ${submitRes.status})，请确认已双击「启动网页版.command」。`);
-  }
-  const { event_id: eventId } = (await submitRes.json()) as { event_id?: string };
-  if (!eventId) throw new Error('本地 Qwen3-TTS 服务未返回 event_id。');
-
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), 300_000);
-  try {
-    const streamRes = await fetch(`${QWEN_GRADIO_BASE}/gradio_api/call/run_instruct/${eventId}`, {
-      signal: abort.signal,
-    });
-    if (!streamRes.ok || !streamRes.body) {
-      throw new Error(`本地 Qwen3-TTS 结果流获取失败 (HTTP ${streamRes.status})。`);
-    }
-
-    const reader = streamRes.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const errorMatch = buffer.match(/event:\s*error\s*\ndata:\s*(.*)\s*\n/);
-      if (errorMatch) throw new Error(`本地 Qwen3-TTS 合成失败: ${errorMatch[1].slice(0, 200)}`);
-
-      const completeMatch = buffer.match(/event:\s*complete\s*\ndata:\s*(\[.*\])\s*\n/);
-      if (completeMatch) {
-        const payload = JSON.parse(completeMatch[1]);
-        const fileUrl: string | undefined = payload?.[0]?.url;
-        if (!fileUrl) throw new Error('本地 Qwen3-TTS 未返回音频文件。');
-        const audioRes = await fetch(fileUrl.startsWith('http') ? fileUrl : `${QWEN_GRADIO_BASE}${fileUrl}`);
-        if (!audioRes.ok) throw new Error(`本地 Qwen3-TTS 音频下载失败 (HTTP ${audioRes.status})。`);
-        return Buffer.from(await audioRes.arrayBuffer());
-      }
-    }
-    throw new Error('本地 Qwen3-TTS 结果流在完成前中断。');
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** 拼接多段同格式 WAV，段间可插入静音（迁移自 server.ts；P1-c3 改用可靠解析） */
-
 export const qwenLocalAdapter: TTSEngineAdapter = {
   id: 'qwen3-tts-local',
-  label: 'Qwen3-TTS 1.7B (本地)',
+  label: 'Qwen3-TTS 1.7B (Worker)',
   requiresApiKey: false,
   isAvailable: async () => {
-    try {
-      const res = await fetch(`${getConfig().qwenTtsUrl}/gradio_api/info`, { signal: AbortSignal.timeout(3000) });
-      return res.ok;
-    } catch {
-      return false;
-    }
+    const health = await workerHealth();
+    return health?.engines.qwen_tts.available ?? false;
   },
   async synthesize(req) {
+    // 硬性约束 #5/#6：不做任何 persona→speaker 映射；
+    // speaker 必须是 worker 官方目录中的精确 ID（如 uncle_fu），Google Voice ID 一律拒绝
+    const catalog = await qwenVoiceCatalog();
     const instruct = toQwenInstruct(req.emotion, req.systemInstruction);
-    const primaryVoice = QWEN_VOICE_MAP[req.voiceName] || req.voiceName || 'Vivian';
 
     // 双人对话：按「角色: 台词」逐行合成再拼接（Qwen 不支持原生多人对谈）
     if (req.multiSpeaker && req.speakers && req.speakers.length >= 2) {
       const voiceFor = (name: string): string => {
         const hit = req.speakers!.find(s => s.speaker === name);
-        return QWEN_VOICE_MAP[hit?.voiceName || ''] || primaryVoice;
+        return resolveQwenSpeaker(hit?.voiceName || req.voiceName || '', catalog);
       };
       const lines = req.text.split(/\n+/).map(l => l.trim()).filter(Boolean);
       const parsed = lines
@@ -240,25 +177,26 @@ export const qwenLocalAdapter: TTSEngineAdapter = {
 
       const wavs: Buffer[] = [];
       for (const seg of segments) {
-        const segWav = await qwenGradioSynthesizeOnce(seg.text, voiceFor(seg.name), instruct);
+        const segWav = await qwenWorkerSynthesize({ text: seg.text, speaker: voiceFor(seg.name), instruct });
         wavs.push(applySpeedToWav(segWav, req.speed));
       }
       const wav = concatWavBuffers(wavs, 0.3); // 段间 0.3s 停顿，模拟对话自然节奏
       return {
         wavBase64: wav.toString('base64'),
-        sampleRate: QWEN_SAMPLE_RATE,
+        sampleRate: parseWav(wav).format.sampleRate,
         duration: wavDuration(wav),
-        voiceName: primaryVoice,
+        voiceName: resolveQwenSpeaker(req.voiceName || '', catalog),
       };
     }
 
-    const raw = await qwenGradioSynthesizeOnce(req.text, primaryVoice, instruct);
+    const speaker = resolveQwenSpeaker(req.voiceName || '', catalog);
+    const raw = await qwenWorkerSynthesize({ text: req.text, speaker, instruct });
     const wav = applySpeedToWav(raw, req.speed);
     return {
       wavBase64: wav.toString('base64'),
-      sampleRate: QWEN_SAMPLE_RATE,
+      sampleRate: parseWav(wav).format.sampleRate,
       duration: wavDuration(wav),
-      voiceName: primaryVoice,
+      voiceName: speaker,
     };
   },
 };
@@ -276,10 +214,13 @@ export const GEMINI_TTS_MODELS: readonly string[] = [
 /** 服务端可真正合成音频的模型 ID（web-speech-native 仅浏览器预览，由路由单独处理） */
 export const SUPPORTED_TTS_MODELS: readonly string[] = [...GEMINI_TTS_MODELS, qwenLocalAdapter.id];
 
-export class UnsupportedTtsModelError extends Error {
-  readonly code = 'unsupported_tts_model';
+export class UnsupportedTtsModelError extends EngineValidationError {
   constructor(readonly model: string) {
-    super(`不支持的 TTS 模型 ID: ${model}（支持: ${SUPPORTED_TTS_MODELS.join(', ')}）`);
+    super(
+      `不支持的 TTS 模型 ID: ${model}（支持: ${SUPPORTED_TTS_MODELS.join(', ')}）`,
+      'unsupported_tts_model',
+      { supportedModels: SUPPORTED_TTS_MODELS }
+    );
     this.name = 'UnsupportedTtsModelError';
   }
 }

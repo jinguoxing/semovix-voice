@@ -18,8 +18,7 @@ export async function setupTestEnv(): Promise<TestEnv> {
   const libraryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'semovix-it-'));
   process.env.SEMOVIX_LIBRARY_DIR = libraryDir;
   delete process.env.GEMINI_API_KEY;
-  delete process.env.QWEN_TTS_URL;
-  delete process.env.WHISPER_ASR_URL;
+  delete process.env.SEMOVIX_WORKER_URL;
   delete process.env.OLLAMA_URL;
 
   vi.stubGlobal('fetch', vi.fn(async () => {

@@ -14,13 +14,11 @@ export const PROJECT_ROOT = path.resolve(__dirname, '..');
 export interface AppConfig {
   port: number;
   geminiApiKey: string;
-  /** 本地 Qwen3-TTS Gradio 服务地址（P3 将替换为 FastAPI Worker） */
-  qwenTtsUrl: string;
+  /** Python FastAPI Worker（Qwen3-TTS + Whisper）地址，硬性约束 #14 */
+  workerUrl: string;
   /** 本地 Ollama 推理服务地址 */
   ollamaUrl: string;
   ollamaModel: string;
-  /** 本地 Whisper Gradio 服务地址（P3 将替换为 FastAPI Worker） */
-  whisperAsrUrl: string;
   /** 素材库根目录（SQLite + 音频文件），可用 SEMOVIX_LIBRARY_DIR 覆盖（测试用） */
   libraryDir: string;
   isProduction: boolean;
@@ -33,10 +31,9 @@ export function getConfig(): AppConfig {
   cached = {
     port: Number(process.env.PORT) || 3000,
     geminiApiKey: process.env.GEMINI_API_KEY || '',
-    qwenTtsUrl: process.env.QWEN_TTS_URL || 'http://127.0.0.1:7860',
+    workerUrl: process.env.SEMOVIX_WORKER_URL || 'http://127.0.0.1:8800',
     ollamaUrl: process.env.OLLAMA_URL || 'http://127.0.0.1:11437',
     ollamaModel: process.env.OLLAMA_MODEL || 'qwen3.5:9b',
-    whisperAsrUrl: process.env.WHISPER_ASR_URL || 'http://127.0.0.1:7861',
     libraryDir: process.env.SEMOVIX_LIBRARY_DIR || path.join(PROJECT_ROOT, 'library'),
     isProduction: process.env.NODE_ENV === 'production',
   };

@@ -31,6 +31,11 @@ describe('GET /api/voice-model/status', () => {
     expect(ids).toContain('whisper-local');
     // fetch 已打桩为不可达：所有引擎 available=false，不得伪造可用
     for (const e of engines) expect(e.available).toBe(false);
+
+    // 硬性约束 #5/#6：音色目录按引擎分列；Worker 离线时 qwen 目录如实为空
+    const voices = res.body.voices as { gemini: Array<{ id: string }>; qwen3Tts: Array<{ id: string }> };
+    expect(voices.gemini.map(v => v.id)).toEqual(['Kore', 'Puck', 'Fenrir', 'Charon', 'Zephyr']);
+    expect(voices.qwen3Tts).toEqual([]);
   });
 });
 
