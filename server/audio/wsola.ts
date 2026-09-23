@@ -4,7 +4,20 @@
  * 每帧在 ±delta 内搜索与上一帧“自然延续”相关性最佳的对齐点，消除相位断裂。
  * （自 server.ts 原样迁移）
  */
-import { pcmToWavBuffer } from './wav';
+import { pcmToWavBuffer, extractPcm16, WavParseError } from './wav';
+
+/** 立体声/多声道 16-bit PCM → 单声道（平均下混），供 WSOLA 处理。 */
+function downmixToMono(pcm: Buffer, channels: number): Buffer {
+  if (channels === 1) return pcm;
+  const frames = Math.floor(pcm.length / 2 / channels);
+  const out = Buffer.alloc(frames * 2);
+  for (let i = 0; i < frames; i++) {
+    let sum = 0;
+    for (let c = 0; c < channels; c++) sum += pcm.readInt16LE((i * channels + c) * 2);
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(sum / channels))), i * 2);
+  }
+  return out;
+}
 
 export function wsolaTimeStretch(pcm: Buffer, speed: number): Buffer {
   if (!Number.isFinite(speed) || Math.abs(speed - 1.0) < 0.03 || pcm.length < 8192) return pcm;
@@ -79,11 +92,16 @@ export function wsolaTimeStretch(pcm: Buffer, speed: number): Buffer {
   return pcmOut;
 }
 
-/** 对整段 WAV 施加语速（剥离头 → WSOLA → 重新封包）。P1-c3 改用可靠解析。 */
-export function applySpeedToWav(wav: Buffer, speed?: number, sampleRate = 24000): Buffer {
+/**
+ * 对整段 WAV 施加语速（可靠解析 → 16bit PCM 单声道化 → WSOLA → 重新封包）。
+ * 输出保持输入的采样率；多声道输入下混为单声道（WSOLA 仅支持单声道）。
+ * @throws WavParseError 输入不是 16-bit PCM WAV
+ */
+export function applySpeedToWav(wav: Buffer, speed?: number, _legacySampleRate?: number): Buffer {
   const s = Number(speed) || 1;
   if (Math.abs(s - 1) < 0.03) return wav;
-  if (wav.toString('ascii', 0, 4) !== 'RIFF') return wav;
-  const stretched = wsolaTimeStretch(wav.subarray(44), s);
-  return pcmToWavBuffer(stretched, sampleRate, 1, 16);
+  const { pcm, info } = extractPcm16(wav);
+  const mono = downmixToMono(pcm, info.format.channels);
+  const stretched = wsolaTimeStretch(mono, s);
+  return pcmToWavBuffer(stretched, info.format.sampleRate, 1, 16);
 }
