@@ -9,3 +9,6 @@ coverage/
 
 # 素材库持久化（SQLite + 音频文件）
 library/
+
+# Python worker
+worker/__pycache__/

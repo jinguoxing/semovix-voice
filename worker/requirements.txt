@@ -1,0 +1,7 @@
+# Semovix Voice Worker 依赖
+#
+# 运行环境：本机 conda env `qwen3-tts`（torch / qwen_tts / transformers / librosa
+# 等模型依赖已随引擎安装，见 README.md）。此处仅声明 Web 层依赖：
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
