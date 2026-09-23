@@ -1,0 +1,6 @@
+{
+  "name": "AudioCraft Studio - 智能音频管理与生成工作站",
+  "description": "专业级AI音频与声音设计工作站：支持AI语音合成(TTS)、智能音效与节奏生成、音频在线剪辑处理、录音捕获及多维素材库管理",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
