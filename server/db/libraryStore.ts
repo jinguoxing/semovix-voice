@@ -158,6 +158,7 @@ export function deleteItem(id: string): boolean {
 
 export function writeItemFile(id: string, format: string, data: Buffer): { fileName: string; size: number } {
   assertSafeId(id);
+  getDb(); // 确保目录与迁移已就绪（修复：全新库上首个写文件请求先于任何读请求时 files/ 不存在）
   const fileName = itemFileName(id, format);
   fs.writeFileSync(path.join(libraryDirs().files, fileName), data);
   return { fileName, size: data.length };
