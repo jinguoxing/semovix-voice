@@ -58,7 +58,60 @@ describe('POST /api/generate-speech (validation only, no engine calls)', () => {
       .send({ text: '你好', ttsModel: 'gemini-2.5-flash-preview-tts' })
       .expect(400);
     expect(res.body.error).toMatch(/API key/i);
-    expect(res.body.fallbackRequired).toBe(true);
+    expect(res.body.code).toBe('engine_not_configured');
     expect(res.body.audioUrl).toBeUndefined(); // 硬性约束：不得伪造成功结果
+  });
+
+  it('rejects unknown tts model IDs with 400 + supportedModels (never forwarded to Gemini)', async () => {
+    const res = await request(app)
+      .post('/api/generate-speech')
+      .send({ text: '你好', ttsModel: 'gpt-4o-mini-audio-preview' })
+      .expect(400);
+    expect(res.body.code).toBe('unsupported_tts_model');
+    expect(res.body.error).toContain('gpt-4o-mini-audio-preview');
+    expect(res.body.supportedModels).toContain('gemini-2.5-flash-preview-tts');
+    expect(res.body.supportedModels).toContain('qwen3-tts-local');
+    expect(res.body.audioUrl).toBeUndefined(); // 硬性约束 #4：未知 ID 不得默认发给 Gemini
+  });
+
+  it('fails honestly when the local engine is unreachable (502, no fabricated audio)', async () => {
+    const res = await request(app)
+      .post('/api/generate-speech')
+      .send({ text: '你好', ttsModel: 'qwen3-tts-local' })
+      .expect(502);
+    expect(res.body.code).toBe('tts_engine_failed');
+    expect(res.body.engine).toBe('qwen3-tts-local');
+    expect(res.body.audioUrl).toBeUndefined(); // 硬性约束 #2：引擎不可用时不得生成假音频
+  });
+});
+
+describe('POST /api/transcribe-audio (honest failure, no simulated transcripts)', () => {
+  it('rejects missing audio with 400', async () => {
+    const res = await request(app).post('/api/transcribe-audio').send({}).expect(400);
+    expect(res.body.code).toBe('invalid_request');
+  });
+
+  it('rejects unknown transcribe model IDs before any engine probing', async () => {
+    const res = await request(app)
+      .post('/api/transcribe-audio')
+      .send({ audioBase64: 'AAAA', transcribeModel: 'some-random-asr' })
+      .expect(400);
+    expect(res.body.code).toBe('unsupported_transcribe_model');
+    expect(res.body.supportedModels).toContain('whisper-local');
+    expect(res.body.transcript).toBeUndefined(); // 硬性约束 #4
+  });
+
+  it('returns 503 engine_unavailable with no transcript when no engine is reachable', async () => {
+    const res = await request(app)
+      .post('/api/transcribe-audio')
+      .send({ audioBase64: 'AAAA', transcribeModel: 'gemini-2.5-flash' })
+      .expect(503);
+    expect(res.body.code).toBe('engine_unavailable');
+    expect(res.body.error).toMatch(/Whisper|API key/);
+    // 硬性约束 #3：引擎不可用时不得写入模拟转录文本
+    expect(res.body.transcript).toBeUndefined();
+    expect(res.body.success).toBeUndefined();
+    expect(res.body.summary).toBeUndefined();
+    expect(res.body.tags).toBeUndefined();
   });
 });

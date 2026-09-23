@@ -1,10 +1,11 @@
 /**
  * 1. AI Speech Synthesis (TTS)
- * （自 server.ts 原样迁移）
+ * P2：模型白名单 + 统一错误结构；引擎不可用/未配置时如实失败，不再回退伪造。
  */
 import { Router } from 'express';
-import { resolveTtsAdapter } from '../engines/tts';
+import { resolveTtsAdapter, SUPPORTED_TTS_MODELS, UnsupportedTtsModelError } from '../engines/tts';
 import { hasGeminiApiKey } from '../engines/geminiClient';
+import { fail } from './respond';
 
 export const generateSpeechRouter = Router();
 
@@ -23,36 +24,49 @@ generateSpeechRouter.post('/generate-speech', async (req, res) => {
     } = req.body;
 
     if (!text || typeof text !== 'string') {
-      return res.status(400).json({ error: 'Text prompt is required.' });
+      return fail(res, 400, 'Text prompt is required.', 'invalid_request');
     }
 
     if (ttsModel === 'web-speech-native') {
+      // 已知特例：浏览器本地合成只做实时预览，服务端不产出可交付音频（如实告知，不伪造）
       return res.json({
         fallbackRequired: true,
-        message: 'Client-side web speech selected.'
+        message: '已选择浏览器本地合成（web-speech-native）：该模式仅供浏览器实时预览，不会生成可保存/交付的音频。请选择 Gemini TTS 或本地 Qwen3-TTS。',
       });
     }
 
-    const adapter = resolveTtsAdapter(ttsModel);
+    let adapter;
+    try {
+      adapter = resolveTtsAdapter(ttsModel);
+    } catch (e) {
+      if (e instanceof UnsupportedTtsModelError) {
+        return fail(res, 400, e.message, e.code, { supportedModels: SUPPORTED_TTS_MODELS });
+      }
+      throw e;
+    }
 
     if (adapter.requiresApiKey && !hasGeminiApiKey()) {
-      return res.status(400).json({
-        error: 'Gemini API key is not configured.',
-        fallbackRequired: true
-      });
+      return fail(res, 400, 'Gemini API key is not configured.', 'engine_not_configured', { engine: adapter.id });
     }
 
-    const result = await adapter.synthesize({
-      text,
-      voiceName,
-      ttsModel,
-      emotion,
-      systemInstruction,
-      speed,
-      temperature,
-      multiSpeaker,
-      speakers,
-    });
+    let result;
+    try {
+      result = await adapter.synthesize({
+        text,
+        voiceName,
+        ttsModel,
+        emotion,
+        systemInstruction,
+        speed,
+        temperature,
+        multiSpeaker,
+        speakers,
+      });
+    } catch (e: any) {
+      // 引擎调用失败：如实上报 502，不降级、不伪造音频（硬性约束 #1/#2）
+      console.error(`TTS engine ${adapter.id} failed:`, e.message);
+      return fail(res, 502, e.message || 'TTS engine call failed.', 'tts_engine_failed', { engine: adapter.id });
+    }
 
     res.json({
       success: true,
@@ -65,9 +79,6 @@ generateSpeechRouter.post('/generate-speech', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Speech generation error:', error);
-    res.status(500).json({
-      error: error.message || 'Failed to generate speech.',
-      fallbackRequired: true,
-    });
+    return fail(res, 500, error.message || 'Failed to generate speech.', 'internal_error');
   }
 });

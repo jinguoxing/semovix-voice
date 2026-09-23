@@ -7,6 +7,22 @@ import { hasGeminiApiKey } from './geminiClient';
 
 export const LOCAL_TRANSCRIBE_ID = 'whisper-local';
 
+/** 允许转发给 Gemini 的转录模型 ID（硬性约束 #4：未知 ID 不得默认发给 Gemini） */
+export const GEMINI_TRANSCRIBE_MODELS: readonly string[] = [
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash-lite',
+];
+
+export const SUPPORTED_TRANSCRIBE_MODELS: readonly string[] = [
+  LOCAL_TRANSCRIBE_ID,
+  ...GEMINI_TRANSCRIBE_MODELS,
+];
+
+export function isSupportedTranscribeModel(model?: string): boolean {
+  return !model || SUPPORTED_TRANSCRIBE_MODELS.includes(model);
+}
+
 export async function whisperIsAvailable(): Promise<boolean> {
   try {
     const res = await fetch(`${getConfig().whisperAsrUrl}/gradio_api/info`, { signal: AbortSignal.timeout(3000) });
@@ -63,12 +79,15 @@ export async function whisperTranscribe(wav: Buffer): Promise<{ transcript: stri
   }
 }
 
-/** 转录引擎路由：显式本地选择 → Whisper；有 key 且 gemini 模型 → 云端；否则 Whisper；再退回模拟 */
+/**
+ * 转录引擎路由：显式本地选择 → Whisper；有 key 且 gemini 模型 → 云端；否则 Whisper；
+ * 全部不可用返回 'fallback'（P2 起 'fallback' 不再产生模拟文本，由路由转为 503，硬性约束 #3）
+ */
 export async function resolveTranscribeEngine(preferredModel?: string): Promise<'whisper' | 'gemini' | 'fallback'> {
   if (preferredModel === LOCAL_TRANSCRIBE_ID) {
     return (await whisperIsAvailable()) ? 'whisper' : 'fallback';
   }
-  if (hasGeminiApiKey() && (!preferredModel || preferredModel.startsWith('gemini'))) return 'gemini';
+  if (hasGeminiApiKey() && (!preferredModel || GEMINI_TRANSCRIBE_MODELS.includes(preferredModel))) return 'gemini';
   if (await whisperIsAvailable()) return 'whisper';
   return hasGeminiApiKey() ? 'gemini' : 'fallback';
 }

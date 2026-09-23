@@ -265,7 +265,28 @@ export const qwenLocalAdapter: TTSEngineAdapter = {
 
 export const ttsAdapters: TTSEngineAdapter[] = [geminiAdapter, qwenLocalAdapter];
 
+/* ---------- 模型白名单（硬性约束 #4：未知 ID 不得默认发给 Gemini） ---------- */
+
+/** 允许转发给 Gemini 的 TTS 模型 ID（undefined = 默认 flash-preview-tts） */
+export const GEMINI_TTS_MODELS: readonly string[] = [
+  'gemini-2.5-flash-preview-tts',
+  'gemini-2.5-pro-preview-tts',
+];
+
+/** 服务端可真正合成音频的模型 ID（web-speech-native 仅浏览器预览，由路由单独处理） */
+export const SUPPORTED_TTS_MODELS: readonly string[] = [...GEMINI_TTS_MODELS, qwenLocalAdapter.id];
+
+export class UnsupportedTtsModelError extends Error {
+  readonly code = 'unsupported_tts_model';
+  constructor(readonly model: string) {
+    super(`不支持的 TTS 模型 ID: ${model}（支持: ${SUPPORTED_TTS_MODELS.join(', ')}）`);
+    this.name = 'UnsupportedTtsModelError';
+  }
+}
+
 export function resolveTtsAdapter(ttsModel?: string): TTSEngineAdapter {
   if (ttsModel === qwenLocalAdapter.id) return qwenLocalAdapter;
-  return geminiAdapter; // 其余模型 ID 均走 Gemini 家族
+  // 仅白名单内的 Gemini TTS 模型（或未指定时的默认值）走云端；未知 ID 一律拒绝
+  if (!ttsModel || GEMINI_TTS_MODELS.includes(ttsModel)) return geminiAdapter;
+  throw new UnsupportedTtsModelError(ttsModel);
 }
