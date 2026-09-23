@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { AudioItem, AudioFolder } from '../types/audio';
 import { exportProjectToZip, importProjectFromZip } from '../utils/projectBackupUtils';
+import { restoreFolders } from '../utils/audioStorage';
 
 interface ProjectBackupModalProps {
   isOpen: boolean;
@@ -101,6 +102,12 @@ export const ProjectBackupModal: React.FC<ProjectBackupModalProps> = ({
       );
 
       onProjectRestored(newItems, newFolders);
+      // 文件夹同步落库，刷新后仍保留
+      try {
+        await restoreFolders(newFolders);
+      } catch (e) {
+        console.warn('恢复文件夹到服务端失败', e);
+      }
       setResultMessage({
         type: 'success',
         text: `工程导入成功！成功恢复 ${newItems.length} 条音频素材与 ${newFolders.length} 个分类文件夹。`,

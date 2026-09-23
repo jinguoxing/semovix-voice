@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import { AudioItem, AudioFolder } from '../types/audio';
+import { addAudioItem, extractPeaks } from './audioStorage';
 
 export interface ProjectBackupMetadata {
   version: string;
@@ -110,18 +111,19 @@ export async function importProjectFromZip(
     const audioFile = zip.file(`audio_files/${meta.filename}`);
     if (audioFile) {
       const blob = await audioFile.async('blob');
-      const audioUrl = URL.createObjectURL(blob);
+      const waveformData = await extractPeaks(blob, 48);
 
-      // Create fallback dummy waveform if needed
-      const dummyWaveform = Array.from({ length: 60 }, () => Math.random() * 0.7 + 0.2);
-
-      const restoredItem: AudioItem = {
-        ...meta,
-        id: meta.id || `restored_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-        audioUrl,
-        waveformData: dummyWaveform,
-        createdAt: meta.createdAt || new Date().toISOString(),
-      };
+      // 直接上传到服务端素材库，拿到持久化的 audioUrl
+      const restoredItem = await addAudioItem(
+        {
+          ...meta,
+          id: meta.id || `restored_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          audioUrl: '',
+          waveformData,
+          createdAt: meta.createdAt || new Date().toISOString(),
+        } as AudioItem,
+        blob,
+      );
 
       importedItems.push(restoredItem);
     }

@@ -3,9 +3,9 @@ import { VoiceModelConfig } from '../types/audio';
 export type { VoiceModelConfig };
 
 export const DEFAULT_VOICE_MODEL_CONFIG: VoiceModelConfig = {
-  ttsModel: 'gemini-3.1-flash-tts-preview',
-  transcribeModel: 'gemini-3.5-transcribe',
-  reasoningModel: 'gemini-3.8-flash',
+  ttsModel: 'gemini-2.5-flash-preview-tts',
+  transcribeModel: 'gemini-2.5-flash',
+  reasoningModel: 'gemini-2.5-flash',
   defaultVoice: 'Kore',
   defaultEmotion: '沉稳专业',
   speed: 1.0,
@@ -27,12 +27,33 @@ export const DEFAULT_VOICE_MODEL_CONFIG: VoiceModelConfig = {
 
 const STORAGE_KEY = 'audiocraft_voice_llm_config';
 
+/**
+ * 历史版本使用过一批不存在的 Gemini 模型 ID（gemini-3.x 系列），
+ * 这里把旧配置里的虚构 ID 归一化为真实可用的模型，避免带着假 ID 请求 404。
+ */
+const LEGACY_MODEL_ID_MAP: Record<string, string> = {
+  'gemini-3.1-flash-tts-preview': 'gemini-2.5-flash-preview-tts',
+  'gemini-3.8-live': 'gemini-2.5-pro-preview-tts',
+  'gemini-3.5-transcribe': 'gemini-2.5-flash',
+  'gemini-3.5-transcribe-live': 'gemini-2.5-pro',
+  'gemini-3.8-flash': 'gemini-2.5-flash',
+  'gemini-3.1-pro-preview': 'gemini-2.5-pro',
+};
+
+function normalizeModelId(id: unknown, fallback: string): string {
+  return typeof id === 'string' && LEGACY_MODEL_ID_MAP[id] ? LEGACY_MODEL_ID_MAP[id] : (typeof id === 'string' && id ? id : fallback);
+}
+
 export function getVoiceModelConfig(): VoiceModelConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_VOICE_MODEL_CONFIG;
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_VOICE_MODEL_CONFIG, ...parsed };
+    const merged = { ...DEFAULT_VOICE_MODEL_CONFIG, ...parsed };
+    merged.ttsModel = normalizeModelId(merged.ttsModel, DEFAULT_VOICE_MODEL_CONFIG.ttsModel);
+    merged.transcribeModel = normalizeModelId(merged.transcribeModel, DEFAULT_VOICE_MODEL_CONFIG.transcribeModel);
+    merged.reasoningModel = normalizeModelId(merged.reasoningModel, DEFAULT_VOICE_MODEL_CONFIG.reasoningModel);
+    return merged;
   } catch (e) {
     console.warn('Failed to parse voice model config from localStorage', e);
     return DEFAULT_VOICE_MODEL_CONFIG;
@@ -67,32 +88,32 @@ export interface ModelOptionInfo {
 
 export const AVAILABLE_TTS_MODELS: ModelOptionInfo[] = [
   {
-    id: 'gemini-3.1-flash-tts-preview',
-    name: 'Gemini 3.1 Flash TTS',
+    id: 'gemini-2.5-flash-preview-tts',
+    name: 'Gemini 2.5 Flash TTS',
     provider: 'Google DeepMind',
-    description: '官方推荐：超低延迟、高拟真度原生多模态语音合成大模型，支持单人多情绪与双人多角色对话。',
+    description: '官方推荐：低延迟、高拟真度原生语音合成模型，支持单人多情绪与双人多角色对话。',
     tag: '官方主力推荐',
     badgeClass: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30',
     isRecommended: true,
-    capabilities: ['原生 24kHz 高采样率', '双人交替对谈', '情绪细粒度注入', '毫秒级响应'],
+    capabilities: ['原生 24kHz 高采样率', '双人交替对谈', '情绪细粒度注入', '低延迟响应'],
   },
   {
-    id: 'gemini-3.8-live',
-    name: 'Gemini 3.8 Live Audio',
+    id: 'gemini-2.5-pro-preview-tts',
+    name: 'Gemini 2.5 Pro TTS',
     provider: 'Google DeepMind',
-    description: '实时对话级全双工声学模型，具备更强的口语化断句、呼吸停顿与实时互动拟真感。',
-    tag: '次世代实时声学',
+    description: '面向高质量内容创作的 TTS 旗舰：更适合播客、有声书等结构化长文本的稳定演绎。',
+    tag: '高保真长文本',
     badgeClass: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/30',
-    capabilities: ['全双工自然交互', '逼真口语停顿', '微情绪流式表达'],
+    capabilities: ['更佳表现力与节奏', '长文本稳定演绎', '双人多角色对话'],
   },
   {
-    id: 'gemini-3.8-flash',
-    name: 'Gemini 3.8 Flash (Audio Modality)',
-    provider: 'Google DeepMind',
-    description: '新一代多模态旗舰音频架构，结合极高推理速度与更深层次的剧本文意理解力。',
-    tag: '高智商语义增强',
-    badgeClass: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
-    capabilities: ['长剧本全局声学一致性', '文生声精确控制', '极速处理能力'],
+    id: 'qwen3-tts-local',
+    name: 'Qwen3-TTS 1.7B (本地)',
+    provider: 'Alibaba Qwen · 本地引擎',
+    description: '运行在本机（MPS）的 Qwen3-TTS-1.7B-CustomVoice：完全离线、零 API 费用，9 种预置音色，支持情感与停顿指令，输出 24kHz WAV。需先双击「启动网页版.command」运行引擎。',
+    tag: '本地离线零成本',
+    badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+    capabilities: ['完全离线免费', '9 种预置音色', '情感/停顿指令控制', '24kHz WAV 输出'],
   },
   {
     id: 'web-speech-native',
@@ -107,39 +128,39 @@ export const AVAILABLE_TTS_MODELS: ModelOptionInfo[] = [
 
 export const AVAILABLE_TRANSCRIBE_MODELS: ModelOptionInfo[] = [
   {
-    id: 'gemini-3.5-transcribe',
-    name: 'Gemini 3.5 Transcribe',
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash (多模态)',
     provider: 'Google DeepMind',
-    description: '专为高精度音视频听翻设计的转写大模型，具备抗噪、口音容错与长音频结构化理解能力。',
+    description: '原生支持音频输入的多模态模型：抗噪与口音容错表现好，适合大批量素材快速听翻。',
     tag: '高精听写首选',
     badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
     isRecommended: true,
-    capabilities: ['中英文混合转写', '多说话人自动区分', '情绪与语调标签提取'],
+    capabilities: ['中英文混合转写', '多说话人区分', '情绪与语调标签提取'],
   },
   {
-    id: 'gemini-3.8-flash',
-    name: 'Gemini 3.8 Flash Multimodal',
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro (多模态)',
     provider: 'Google DeepMind',
-    description: '通用多模态超快推理模型，同步输出逐字稿、情绪摘要与素材多维标签推荐。',
+    description: '旗舰多模态推理模型：转写之外同步输出内容摘要、情绪分析与素材多维标签建议。',
     tag: '多维度声学分析',
     badgeClass: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30',
     capabilities: ['深度内容摘要生成', '智能标签推荐', '背景声景分析'],
   },
   {
-    id: 'gemini-3.5-transcribe-live',
-    name: 'Gemini 3.5 Transcribe Live',
-    provider: 'Google DeepMind',
-    description: '流式近实时转录模型，适配正在录音时的边录边翻与实时字幕生成。',
-    tag: '低延迟流式',
-    badgeClass: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-    capabilities: ['流式瞬时输出', '低缓冲时延', '时间戳对齐'],
+    id: 'whisper-local',
+    name: 'Whisper large-v3-turbo (本地)',
+    provider: 'OpenAI · 本地引擎',
+    description: '运行在本机（MPS）的 Whisper large-v3-turbo：完全离线转写，支持中英混合与超过 30 秒的长音频，转录后由本地 Qwen 生成摘要/情绪/标签。需先双击 Whisper-ASR「启动网页版.command」运行引擎。',
+    tag: '本地离线转写',
+    badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+    capabilities: ['完全离线免费', '中英混合转写', '长音频顺序生成', '本地摘要与标签'],
   },
 ];
 
 export const AVAILABLE_REASONING_MODELS: ModelOptionInfo[] = [
   {
-    id: 'gemini-3.8-flash',
-    name: 'Gemini 3.8 Flash',
+    id: 'gemini-2.5-flash',
+    name: 'Gemini 2.5 Flash',
     provider: 'Google DeepMind',
     description: '轻量极速架构，专精于音效程序化物理振荡器参数、合成器滤波包络及 16 步进鼓机律动编曲。',
     tag: '高吞吐极速推理',
@@ -148,13 +169,22 @@ export const AVAILABLE_REASONING_MODELS: ModelOptionInfo[] = [
     capabilities: ['DSP 算法物理建模', '电子乐和弦级进分析', '瞬时 JSON 结构化输出'],
   },
   {
-    id: 'gemini-3.1-pro-preview',
-    name: 'Gemini 3.1 Pro (Complex Reasoning)',
+    id: 'gemini-2.5-pro',
+    name: 'Gemini 2.5 Pro',
     provider: 'Google DeepMind',
     description: '高阶推理架构，具备更加复杂的音乐理论声学构想、非线性母带链设计与深度剧本理解力。',
     tag: '高阶复杂音乐理论',
     badgeClass: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
     capabilities: ['高级复调编排', '声场物理声学模拟', '专业母带动态规划'],
+  },
+  {
+    id: 'qwen-local-reasoning',
+    name: 'Qwen3.5 9B (本地)',
+    provider: 'Alibaba Qwen · 本地引擎',
+    description: '运行在本机 Ollama 服务上的 Qwen3.5-9B：完全离线生成音效配方、节拍编曲与素材标签，JSON 结构化输出。需先启动 Ollama（端口 11437）并拉取 qwen3.5:9b 模型。',
+    tag: '本地离线推理',
+    badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+    capabilities: ['完全离线免费', 'JSON 结构化输出', '音效配方/节拍/标签生成'],
   },
 ];
 

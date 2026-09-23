@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# 素材库持久化（SQLite + 音频文件）
+library/

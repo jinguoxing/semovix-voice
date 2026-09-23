@@ -175,7 +175,7 @@ export const AudioSFXStudio: React.FC<AudioSFXStudioProps> = ({
         body: JSON.stringify({ 
           prompt, 
           category: selectedCategory,
-          reasoningModel: modelConfig.reasoningModel || 'gemini-3.8-flash',
+          reasoningModel: modelConfig.reasoningModel || 'gemini-2.5-flash',
         }),
       });
       const data = await res.json();

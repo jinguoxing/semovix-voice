@@ -127,9 +127,9 @@ export interface AudioEditSettings {
 }
 
 export interface VoiceModelConfig {
-  ttsModel: string; // e.g. 'gemini-3.1-flash-tts-preview'
-  transcribeModel: string; // e.g. 'gemini-3.5-transcribe'
-  reasoningModel: string; // e.g. 'gemini-3.8-flash'
+  ttsModel: string; // e.g. 'gemini-2.5-flash-preview-tts' 或 'qwen3-tts-local'
+  transcribeModel: string; // e.g. 'gemini-2.5-flash'
+  reasoningModel: string; // e.g. 'gemini-2.5-flash'
   defaultVoice: string; // 'Kore' | 'Puck' | 'Fenrir' | 'Charon' | 'Zephyr'
   defaultEmotion: string;
   speed: number; // 0.75 - 1.5

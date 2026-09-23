@@ -64,7 +64,7 @@ export default function App() {
     async function loadData() {
       const storedItems = await getAudioItems();
       setItems(storedItems);
-      const loadedFolders = getFolders();
+      const loadedFolders = await getFolders();
       setFolders(loadedFolders);
       if (storedItems.length > 0 && !activeItem) {
         setActiveItem(storedItems[0]);
@@ -208,16 +208,24 @@ export default function App() {
   };
 
   // Folder Operations
-  const handleCreateFolder = (name: string, color?: string) => {
-    const newFolder = createFolder(name, color);
-    setFolders(prev => [...prev, newFolder]);
+  const handleCreateFolder = async (name: string, color?: string) => {
+    try {
+      const newFolder = await createFolder(name, color);
+      setFolders(prev => [...prev, newFolder]);
+    } catch (e) {
+      console.error('创建文件夹失败', e);
+    }
   };
 
-  const handleDeleteFolder = (id: string) => {
-    const updated = deleteFolder(id);
-    setFolders(updated);
-    if (selectedFolderId === id) {
-      setSelectedFolderId(undefined);
+  const handleDeleteFolder = async (id: string) => {
+    try {
+      const updated = await deleteFolder(id);
+      setFolders(updated);
+      if (selectedFolderId === id) {
+        setSelectedFolderId(undefined);
+      }
+    } catch (e) {
+      console.error('删除文件夹失败', e);
     }
   };
 

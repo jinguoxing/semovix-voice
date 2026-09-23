@@ -220,7 +220,7 @@ export const AudioBeatStudio: React.FC<AudioBeatStudioProps> = ({
           prompt: promptStyle, 
           bpm, 
           scale,
-          reasoningModel: modelConfig.reasoningModel || 'gemini-3.8-flash',
+          reasoningModel: modelConfig.reasoningModel || 'gemini-2.5-flash',
         }),
       });
       const data = await res.json();

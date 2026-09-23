@@ -50,7 +50,7 @@ export const AudioTranscribeModal: React.FC<AudioTranscribeModalProps> = ({
             body: JSON.stringify({
               audioBase64: base64Data,
               mimeType: blob.type || 'audio/wav',
-              transcribeModel: modelConfig.transcribeModel || 'gemini-3.5-transcribe',
+              transcribeModel: modelConfig.transcribeModel || 'gemini-2.5-flash',
             }),
           });
           const data = await res.json();
@@ -109,7 +109,7 @@ export const AudioTranscribeModal: React.FC<AudioTranscribeModalProps> = ({
               <div className="flex items-center gap-2">
                 <h3 className="text-base font-bold text-neutral-100">AI 语音转录与情绪分析</h3>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  {modelConfig.transcribeModel || 'gemini-3.5-transcribe'}
+                  {modelConfig.transcribeModel || 'gemini-2.5-flash'}
                 </span>
               </div>
               <span className="text-xs text-neutral-400 font-mono">{item.title}</span>
