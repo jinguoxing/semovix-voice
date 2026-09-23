@@ -1,12 +1,13 @@
 /**
  * Semovix Voice Studio - 素材库持久化
  * 音频文件落磁盘 (<libraryDir>/files/)，元数据存 SQLite (<libraryDir>/library.db)。
- * 自 server.ts 原样迁移；DDL 在 P1-c4 抽入版本化迁移。
+ * 表结构由版本化迁移（server/db/migrations.ts）管理。
  */
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { getConfig } from '../config';
+import { migrate } from './migrations';
 
 export function libraryDirs(): { root: string; files: string; dbPath: string } {
   const root = getConfig().libraryDir;
@@ -21,35 +22,7 @@ export function getDb(): Database.Database {
   fs.mkdirSync(files, { recursive: true });
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS items (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      description TEXT,
-      category TEXT,
-      duration REAL,
-      sampleRate INTEGER,
-      channels INTEGER,
-      format TEXT,
-      fileSize INTEGER,
-      createdAt TEXT,
-      updatedAt TEXT,
-      tags TEXT,          -- JSON string[]
-      rating INTEGER,
-      folderId TEXT,
-      transcript TEXT,
-      waveformData TEXT,  -- JSON number[]
-      metadata TEXT,      -- JSON object
-      fileName TEXT
-    );
-    CREATE TABLE IF NOT EXISTS folders (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      color TEXT,
-      createdAt TEXT
-    );
-  `);
+  migrate(db);
   return db;
 }
 
