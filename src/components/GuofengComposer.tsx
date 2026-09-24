@@ -7,6 +7,7 @@ import {
   pentatonicPitch, resizeGuofengSection, type GuofengComposition, type GuofengInstrument, type GuofengNote,
 } from '../music/guofeng';
 import { renderGuofengComposition } from '../music/guofengRenderer';
+import { generateGuofeng } from '../music/guofengApi';
 
 interface Props {
   folders: AudioFolder[];
@@ -61,12 +62,10 @@ export const GuofengComposer: React.FC<Props> = ({ folders, items, onSaveToLibra
     if (!instruments.some(instrument => instrument !== 'drum')) { setError('请至少选择一件旋律乐器。'); return; }
     setBusy('generate'); setError(''); setMessage('');
     try {
-      const res = await fetch('/api/generate-guofeng-composition', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, mood, scene, durationSec, bpm, key, scale, instruments, reasoningModel: getVoiceModelConfig().reasoningModel }),
-      });
-      const data = await res.json();
-      if (!res.ok || !isGuofengComposition(data.composition)) throw new Error(data.error || '编曲服务返回了无效工程。');
+      const data = await generateGuofeng(
+        { prompt, mood, scene, durationSec, bpm, key, scale, instruments },
+        getVoiceModelConfig().reasoningModel,
+      );
       setComposition(data.composition);
       setSelectedSectionId('theme');
       setSelectedTrackId(data.composition.tracks.find((candidate: { instrument: string }) => candidate.instrument === 'dizi' || candidate.instrument === 'erhu')?.id || data.composition.tracks[0].id);
