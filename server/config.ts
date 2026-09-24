@@ -32,7 +32,8 @@ export function getConfig(): AppConfig {
     port: Number(process.env.PORT) || 3000,
     geminiApiKey: process.env.GEMINI_API_KEY || '',
     workerUrl: process.env.SEMOVIX_WORKER_URL || 'http://127.0.0.1:8800',
-    ollamaUrl: process.env.OLLAMA_URL || 'http://127.0.0.1:11437',
+    // Ollama 统一默认端口 11434；非默认部署（如本机 11437）用 OLLAMA_URL 覆盖
+    ollamaUrl: process.env.OLLAMA_URL || 'http://127.0.0.1:11434',
     ollamaModel: process.env.OLLAMA_MODEL || 'qwen3.5:9b',
     libraryDir: process.env.SEMOVIX_LIBRARY_DIR || path.join(PROJECT_ROOT, 'library'),
     isProduction: process.env.NODE_ENV === 'production',

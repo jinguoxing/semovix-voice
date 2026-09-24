@@ -1,0 +1,16 @@
+# Semovix Voice Worker 基础依赖（全平台）
+#
+# Web 层 + 引擎层（Qwen3-TTS / Whisper）。torch 按平台另装：
+#   macOS（Apple Silicon MPS）→ requirements-macos.txt
+#   Linux/Windows NVIDIA GPU  → requirements-cuda.txt
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+qwen-tts>=0.2
+transformers>=4.46
+librosa>=0.10
+numpy>=1.24
+soundfile>=0.12
+python-dotenv>=1.0
+pytest>=8.0
+httpx>=0.27

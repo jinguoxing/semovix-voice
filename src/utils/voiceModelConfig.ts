@@ -205,7 +205,7 @@ export const AVAILABLE_REASONING_MODELS: ModelOptionInfo[] = [
     id: 'qwen-local-reasoning',
     name: 'Qwen3.5 9B (本地)',
     provider: 'Alibaba Qwen · 本地引擎',
-    description: '运行在本机 Ollama 服务上的 Qwen3.5-9B：完全离线生成音效配方、节拍编曲与素材标签，JSON 结构化输出。需先启动 Ollama（端口 11437）并拉取 qwen3.5:9b 模型。',
+    description: '运行在本机 Ollama 服务上的 Qwen3.5-9B：完全离线生成音效配方、节拍编曲与素材标签，JSON 结构化输出。需先启动 Ollama（默认端口 11434，非默认端口用 OLLAMA_URL 环境变量覆盖）并拉取 qwen3.5:9b 模型。',
     tag: '本地离线推理',
     badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
     capabilities: ['完全离线免费', 'JSON 结构化输出', '音效配方/节拍/标签生成'],

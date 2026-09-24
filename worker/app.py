@@ -35,8 +35,9 @@ from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-# 模型 checkpoint：默认本机路径，可用环境变量覆盖；缺省回退 HuggingFace repo id
-DEFAULT_TTS_CKPT = "/Volumes/King的扩展盘/qwen LLM/Qwen3-TTS/models/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+# 模型 checkpoint：默认 HuggingFace repo id（可移植；首次启动自动下载）。
+# 本机已有权重时用 SEMOVIX_TTS_CKPT 指向本地目录，避免重复下载。
+DEFAULT_TTS_CKPT = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 TTS_CKPT = os.environ.get("SEMOVIX_TTS_CKPT", DEFAULT_TTS_CKPT)
 ASR_MODEL_ID = os.environ.get("SEMOVIX_ASR_MODEL", "openai/whisper-large-v3-turbo")
 

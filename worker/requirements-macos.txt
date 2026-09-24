@@ -1,0 +1,4 @@
+# macOS（Apple Silicon，MPS 加速）
+# PyPI 官方 arm64 轮子自带 MPS 后端，直接安装即可。
+-r requirements-base.txt
+torch>=2.3

@@ -1,0 +1,6 @@
+# Linux / Windows（NVIDIA GPU，CUDA）
+# CUDA 版 torch 走 PyTorch 官方索引；按驱动支持的 CUDA 版本调整
+# --extra-index-url 的 cuXXX 后缀（cu121 / cu124 / cu126 …）。
+--extra-index-url https://download.pytorch.org/whl/cu121
+-r requirements-base.txt
+torch>=2.3
