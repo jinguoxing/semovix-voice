@@ -4,7 +4,7 @@ import { VoiceWorkspaceSidebar } from './VoiceWorkspaceSidebar';
 import './VoiceIdentityCreateView.css';
 import './VoiceIdentityWorkbenchEntry.css';
 
-type SavedIdentity = { id: string; name: string; ownerName: string; source: string; language: string; description: string; sourceNote?: string; createdAt?: string };
+type SavedIdentity = { id: string; name: string; ownerName: string; source: string; language: string; description: string; sourceNote?: string; createdAt?: string; form?: { language?: string } };
 type SourceInfo = { title: string; description: string; section: string; prompt: string; guidance: string[]; icon: typeof AudioLines };
 const SOURCE_CONTENT: Record<string, SourceInfo> = {
   'AI 原创设计': { title: '声音来源｜AI 原创设计', description: '定义声音 Brief、统一参考文本和多方向设计。', section: '声音设计', prompt: '记录声音身份的设计要求…', guidance: ['声音 Brief', '统一参考文本', '设计方向'], icon: AudioLines },
@@ -37,7 +37,7 @@ export function VoiceIdentityWorkbenchEntry({ id, onBack, onCenter }: { id: stri
   };
 
   return <div className="voice-create-page vwe-page">
-    <VoiceWorkspaceSidebar active="声音来源" name={draft?.name || ''} owner={draft?.ownerName || ''} source={source} createdAt={draft?.createdAt ? '今天 ' + new Date(draft.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '今天 09:20'} onOverview={onBack} onSource={() => undefined} />
+    <VoiceWorkspaceSidebar active="声音来源" name={draft?.name || ''} owner={draft?.ownerName || ''} source={source} language={draft?.form?.language || draft?.language || '未选择'} roleSummary verificationHint="来源配置后可进入" onOverview={onBack} onSource={() => undefined} />
     <main className="vc-workspace"><div className="vc-content"><button type="button" className="vwe-back" onClick={onCenter}><ArrowLeft size={14} />返回声音角色中心</button><header className="vc-page-header"><div><h1>{content.title}</h1><p>{content.description}</p></div><div className="vc-header-actions"><button type="button" onClick={saveNote}><Save size={14} />保存草稿</button></div></header><div className="vc-info-strip"><CircleHelp size={15} /><span>{draft?.name || '当前声音角色'}已创建为草稿。四种声音来源共享同一套工作台框架，此处配置当前来源。</span></div>{feedback && <div className="vc-feedback" role="status">{feedback}<button type="button" onClick={() => setFeedback('')} aria-label="关闭提示"><X size={14} /></button></div>}
       <div className="vwe-columns"><section className="vc-panel"><div className="vc-panel-heading"><div><h2>{content.section}</h2><p>{draft?.description || '在来源工作区继续完善声音角色。'}</p></div><Icon size={18} /></div><label className="vc-field"><span>工作区备注</span><textarea rows={6} value={note} onChange={event => setNote(event.target.value)} placeholder={content.prompt} /></label><div className="vwe-card-foot"><button type="button" onClick={saveNote}><Save size={14} />保存当前内容</button></div></section><section className="vc-panel"><div className="vc-panel-heading"><div><h2>本来源工作区</h2><p>当前来源需要继续完成的资料和配置。</p></div></div><div className="vwe-source-name"><Icon size={19} />{source}</div><ul>{content.guidance.map(item => <li key={item}><Check size={14} />{item}</li>)}</ul><div className="vc-check-note">验证与发布将根据“{source}”自动切换所需策略。</div></section></div>
     </div></main>

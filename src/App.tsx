@@ -39,13 +39,28 @@ import {
 } from './utils/audioStorage';
 import { getAudioContext } from './utils/audioEngine';
 
+function currentVoiceSourceRoute(): { id: string; source: VoiceSource } | null {
+  const match = window.location.pathname.match(/^\/voice-identities\/([^/]+)(?:\/(design|source|workbench))?$/);
+  if (!match || match[1] === 'new') return null;
+  if (!match[2] && new URLSearchParams(window.location.search).get('section') !== 'source') return null;
+  const id = decodeURIComponent(match[1]);
+  if (match[2] === 'design') return { id, source: 'AI 原创设计' };
+  try {
+    const drafts = JSON.parse(window.localStorage.getItem('voice-studio-identity-drafts') || '[]') as { id: string; source: VoiceSource }[];
+    const saved = drafts.find(item => item.id === id)?.source;
+    const selected = window.sessionStorage.getItem(`voice-studio-source-identity:${id}`) as VoiceSource | null;
+    const source = String(saved || selected || 'AI 原创设计');
+    return { id, source: source === '预置音色' ? 'Provider 预置音色' : source as VoiceSource };
+  } catch { return { id, source: 'AI 原创设计' }; }
+}
+
 export default function App() {
   const [items, setItems] = useState<AudioItem[]>([]);
   const [folders, setFolders] = useState<AudioFolder[]>([]);
   const [currentTab, setCurrentTab] = useState<StudioTab>(() => window.location.pathname.startsWith('/voice-identities') ? 'voice-identities' : 'library');
   const [voiceCreateOpen, setVoiceCreateOpen] = useState(() => window.location.pathname === '/voice-identities/new');
-  const [voiceWorkbenchId, setVoiceWorkbenchId] = useState<string | null>(() => window.location.pathname.match(/^\/voice-identities\/([^/]+)\/(?:source|workbench)$/)?.[1] || null);
-  const [voiceDesignId, setVoiceDesignId] = useState<string | null>(() => window.location.pathname.match(/^\/voice-identities\/([^/]+)\/design$/)?.[1] || null);
+  const [voiceWorkbenchId, setVoiceWorkbenchId] = useState<string | null>(() => { const route = currentVoiceSourceRoute(); return route && route.source !== 'AI 原创设计' ? route.id : null; });
+  const [voiceDesignId, setVoiceDesignId] = useState<string | null>(() => { const route = currentVoiceSourceRoute(); return route?.source === 'AI 原创设计' ? route.id : null; });
   const [searchQuery, setSearchQuery] = useState('');
   const [voiceIdentityCount, setVoiceIdentityCount] = useState(8);
 
@@ -53,8 +68,9 @@ export default function App() {
     const handlePopState = () => {
       setCurrentTab(window.location.pathname.startsWith('/voice-identities') ? 'voice-identities' : 'library');
       setVoiceCreateOpen(window.location.pathname === '/voice-identities/new');
-      setVoiceWorkbenchId(window.location.pathname.match(/^\/voice-identities\/([^/]+)\/(?:source|workbench)$/)?.[1] || null);
-      setVoiceDesignId(window.location.pathname.match(/^\/voice-identities\/([^/]+)\/design$/)?.[1] || null);
+      const route = currentVoiceSourceRoute();
+      setVoiceWorkbenchId(route && route.source !== 'AI 原创设计' ? route.id : null);
+      setVoiceDesignId(route?.source === 'AI 原创设计' ? route.id : null);
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -91,20 +107,22 @@ export default function App() {
   const openVoiceWorkbench = (id: string, source: VoiceSource) => {
     setCurrentTab('voice-identities');
     setVoiceCreateOpen(false);
+    try { window.sessionStorage.setItem(`voice-studio-source-identity:${id}`, source); } catch { /* route remains usable */ }
     const isDesign = source === 'AI 原创设计';
     setVoiceWorkbenchId(isDesign ? null : id);
     setVoiceDesignId(isDesign ? id : null);
-    window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}/${isDesign ? 'design' : 'source'}`);
+    window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}?section=source`);
   };
 
   const openVoiceDesign = (voice: { id: string; name: string; ownerName: string; ownerType: string; source: string; language: string }) => {
     const id = voice.id;
     try { window.sessionStorage.setItem(`voice-studio-design-identity:${id}`, JSON.stringify(voice)); } catch { /* route still works */ }
+    try { window.sessionStorage.setItem(`voice-studio-source-identity:${id}`, 'AI 原创设计'); } catch { /* route still works */ }
     setCurrentTab('voice-identities');
     setVoiceCreateOpen(false);
     setVoiceWorkbenchId(null);
     setVoiceDesignId(id);
-    window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}/design`);
+    window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}?section=source`);
   };
 
   const reopenVoiceDraft = (id: string) => {
@@ -364,7 +382,7 @@ export default function App() {
         totalDurationSeconds={totalDurationSeconds}
         voiceIdentityCount={voiceIdentityCount}
         isCreatingVoiceIdentity={voiceCreateOpen}
-        voiceModuleHint={voiceDesignId ? '声音设计草稿' : voiceWorkbenchId ? '声音来源草稿' : undefined}
+        voiceModuleHint={voiceDesignId ? '声音来源 · AI 原创设计' : voiceWorkbenchId ? '声音来源草稿' : undefined}
       />
 
       {/* Main Workspace Body */}
