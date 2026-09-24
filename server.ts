@@ -33,8 +33,9 @@ async function startServer() {
     });
   }
 
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`AudioCraft Studio running at http://0.0.0.0:${port}`);
+  // P01 安全默认：仅本机监听，不暴露到局域网
+  app.listen(port, '127.0.0.1', () => {
+    console.log(`Semovix Voice Studio running at http://127.0.0.1:${port}`);
   });
 }
 
