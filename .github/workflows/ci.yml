@@ -1,0 +1,49 @@
+# CI（P01 六）：Node/Bun 前后端 + Python Worker 双作业。
+# 不下载任何模型权重——worker 测试通过 _BUILDERS 注入伪模型，
+# requirements-base 亦不含 torch/模型（torch 按平台装 -macos/-cuda）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    name: Node (bun install / lint / test / build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Lint (tsc --noEmit)
+        run: bun run lint
+
+      - name: Unit + integration tests
+        run: bun run test
+
+      - name: Build
+        run: bun run build
+
+  python:
+    name: Python worker (py_compile / pytest, no model downloads)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install base requirements (no torch, no weights)
+        run: pip install -r worker/requirements-base.txt
+
+      - name: Byte-compile worker sources
+        run: python -m py_compile worker/app.py worker/doctor.py
+
+      - name: Worker API tests (fake models via _BUILDERS)
+        run: pytest worker/tests -v

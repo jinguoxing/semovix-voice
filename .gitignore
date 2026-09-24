@@ -11,4 +11,5 @@ coverage/
 library/
 
 # Python worker
-worker/__pycache__/
+__pycache__/
+.pytest_cache/

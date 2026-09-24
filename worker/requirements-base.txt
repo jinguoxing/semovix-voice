@@ -6,7 +6,7 @@
 fastapi>=0.110
 uvicorn>=0.29
 python-multipart>=0.0.9
-qwen-tts>=0.2
+qwen-tts>=0.1.0
 transformers>=4.46
 librosa>=0.10
 numpy>=1.24
