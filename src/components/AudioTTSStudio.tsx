@@ -113,6 +113,11 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
     title: string;
     text: string;
     voice: string;
+    // P01 可追溯：保存素材时记录引擎与参数元数据
+    engine?: string;
+    ttsModel?: string;
+    generationId?: string;
+    params?: { speed?: number; temperature?: number; emotion?: string; mode?: string };
   } | null>(null);
 
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
@@ -198,6 +203,15 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
         title: defaultTitle,
         text: promptText,
         voice: selectedVoice,
+        engine: data.engine,
+        ttsModel: modelConfig.ttsModel,
+        generationId: data.generationId,
+        params: {
+          speed: modelConfig.speed,
+          temperature: modelConfig.temperature,
+          emotion: selectedEmotion,
+          mode,
+        },
       });
       setAssetTitle(defaultTitle);
     } catch (err: any) {
@@ -243,6 +257,13 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
       audioUrl: generatedAudio.audioUrl,
       waveformData: [0.3, 0.6, 0.8, 0.5, 0.9, 0.7, 0.8, 0.4, 0.6, 0.9, 0.5, 0.7],
       metadata: {
+        // P01 可追溯：素材自带引擎/模型/官方音色 ID/生成参数/留痕 ID
+        providerId: generatedAudio.ttsModel?.startsWith('gemini') ? 'google' : 'qwen',
+        modelId: generatedAudio.ttsModel,
+        providerVoiceId: generatedAudio.voice,
+        engine: generatedAudio.engine,
+        generationId: generatedAudio.generationId,
+        params: generatedAudio.params,
         voiceName: generatedAudio.voice,
         emotion: selectedEmotion,
         isAiGenerated: true,
