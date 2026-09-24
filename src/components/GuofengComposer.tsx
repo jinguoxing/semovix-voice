@@ -18,6 +18,9 @@ interface Props {
 }
 
 const KEY_NAMES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
+const GENERATOR_NAMES: Record<GuofengComposition['generator'], string> = {
+  rules: '内置模板', ollama: '本地 Qwen 大模型', gemini: 'Gemini 大模型', manual: '手工编曲',
+};
 
 export const GuofengComposer: React.FC<Props> = ({ folders, items, onSaveToLibrary, onSwitchToBeat, active }) => {
   const [prompt, setPrompt] = useState('月下山水，清雅悠远的国风纯音乐');
@@ -70,7 +73,7 @@ export const GuofengComposer: React.FC<Props> = ({ folders, items, onSaveToLibra
       setSelectedSectionId('theme');
       setSelectedTrackId(data.composition.tracks.find((candidate: { instrument: string }) => candidate.instrument === 'dizi' || candidate.instrument === 'erhu')?.id || data.composition.tracks[0].id);
       setRendered(null);
-      setMessage(data.warning || (data.engine === 'rules' ? '已使用内置编曲模板生成，可编辑后渲染。' : '旋律已生成，可编辑后渲染。'));
+      setMessage(data.warning || `${GENERATOR_NAMES[data.engine]}已生成旋律动机，可编辑后渲染。`);
     } catch (cause) { setError(cause instanceof Error ? cause.message : '生成失败。'); }
     finally { setBusy(null); }
   };
@@ -165,6 +168,7 @@ export const GuofengComposer: React.FC<Props> = ({ folders, items, onSaveToLibra
             <label className="block text-xs text-neutral-400">载入已保存的编曲<select defaultValue="" onChange={event => handleLoad(event.target.value)} className="mt-1 block w-full rounded-lg border border-neutral-700 bg-neutral-950 p-2 text-neutral-100"><option value="">选择素材库工程…</option>{projects.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
             {composition && <><label className="block text-xs text-neutral-400">作品名称<input value={composition.title} onChange={event => updateComposition(previous => ({ ...previous, title: event.target.value }))} className="mt-1 block w-full rounded-lg border border-neutral-700 bg-neutral-950 p-2 text-neutral-100" /></label>
               <div className="text-xs text-neutral-400">{composition.sections.map(section => `${section.name} ${section.bars} 小节`).join(' · ')} · 约 {compositionDuration(composition).toFixed(1)} 秒</div>
+              <div className="text-xs text-neutral-400">旋律动机来源：{GENERATOR_NAMES[composition.generator]} · 伴奏与音色：本地程序合成</div>
               <button disabled={busy !== null} onClick={handleRender} className="w-full rounded-lg bg-cyan-700 px-3 py-2 text-sm font-semibold hover:bg-cyan-600 disabled:opacity-50">{busy === 'render' ? '正在渲染…' : '渲染并试听 WAV'}</button></>}
             {rendered && <><audio ref={previewRef} controls src={rendered.audioUrl} className="w-full" aria-label="国风音乐试听" /><div className="flex gap-2"><a href={rendered.audioUrl} download={`${composition?.title || '国风音乐'}.wav`} className="flex items-center gap-1 rounded-lg border border-neutral-700 px-3 py-2 text-xs"><Download className="h-3.5 w-3.5" />下载 WAV</a><select value={folderId} onChange={event => setFolderId(event.target.value)} className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-950 p-2 text-xs"><option value="">未分类</option>{folders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></div><button disabled={busy !== null} onClick={handleSave} className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold hover:bg-emerald-600 disabled:opacity-50">{busy === 'save' ? '正在保存…' : '保存音频与可编辑编曲'}</button></>}
             {message && <p role="status" className="text-xs text-emerald-300">{message}</p>}{error && <p role="alert" className="text-xs text-rose-300">{error}</p>}

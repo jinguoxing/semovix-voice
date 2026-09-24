@@ -21,6 +21,7 @@ describe('POST /api/generate-guofeng-composition', () => {
     }).expect(200);
     expect(res.body.engine).toBe('rules');
     expect(res.body.composition.generator).toBe('rules');
+    expect(res.body.warning).toMatch(/未检测到可用旋律模型/);
     expect(res.body.composition.sections.map((section: { id: string }) => section.id)).toEqual(['intro', 'theme', 'outro']);
     expect(res.body.composition.sections[1].notes.length).toBeGreaterThan(0);
   });

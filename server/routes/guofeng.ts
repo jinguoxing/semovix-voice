@@ -97,6 +97,8 @@ guofengRouter.post('/generate-guofeng-composition', async (req, res) => {
       } catch (error) {
         warning = `旋律模型暂不可用，已改用内置编曲模板：${error instanceof Error ? error.message : '未知错误'}`;
       }
+    } else {
+      warning = '未检测到可用旋律模型，已使用内置编曲模板。';
     }
     const composition = createGuofengComposition(request, motifs, usedEngine);
     return res.json({ composition, engine: usedEngine, warning });
