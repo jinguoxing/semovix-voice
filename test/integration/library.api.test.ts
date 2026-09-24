@@ -74,12 +74,33 @@ describe('POST /api/library/items', () => {
     expect(res.body.error).toMatch(/id/);
   });
 
-  it('rejects unsafe ids (path traversal)', async () => {
-    await request(app)
+  it('rejects unsafe ids with 400 invalid_id (path traversal, P01 route boundary)', async () => {
+    const res = await request(app)
       .post('/api/library/items')
       .field('item', JSON.stringify({ id: '../evil', title: 'x' }))
-      .expect(500); // assertSafeId 抛错 → 500；不落盘即核心约束
+      .expect(400);
+    expect(res.body.code).toBe('invalid_id');
     expect(fs.existsSync(path.join(libraryDir, 'files', '../evil.wav'))).toBe(false);
+  });
+
+  it('rejects corrupt wav bytes with 400 invalid_audio_file (server-side RIFF parse)', async () => {
+    const notWav = Buffer.alloc(64, 0x00);
+    const res = await request(app)
+      .post('/api/library/items')
+      .field('item', JSON.stringify({ id: 'it-badwav', title: '坏 wav', format: 'wav' }))
+      .attach('audio', notWav, { filename: 'bad.wav', contentType: 'audio/wav' })
+      .expect(400);
+    expect(res.body.code).toBe('invalid_audio_file');
+    expect(fs.existsSync(path.join(libraryDir, 'files', 'it-badwav.wav'))).toBe(false);
+  });
+
+  it('rejects non-audio mime with 415 unsupported_media_type', async () => {
+    const res = await request(app)
+      .post('/api/library/items')
+      .field('item', JSON.stringify({ id: 'it-notaudio', title: '文本冒充音频', format: 'wav' }))
+      .attach('audio', Buffer.from('hello'), { filename: 'a.txt', contentType: 'text/plain' })
+      .expect(415);
+    expect(res.body.code).toBe('unsupported_media_type');
   });
 });
 
@@ -123,9 +144,12 @@ describe('PATCH & DELETE /api/library/items/:id', () => {
     const after = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
     expect(after).not.toBe(before); // 验收：覆盖后文件内容必须真实变化
     expect(res.body.item.fileSize).toBe(tinyWavBuffer(48000, 480).length);
-    expect(res.body.item.sampleRate).toBe(48000);
-    expect(res.body.item.duration).toBe(0.02);
+    expect(res.body.item.sampleRate).toBe(48000); // 服务端解析为准
+    expect(res.body.item.duration).toBe(0.01); // 480 帧 @ 48kHz = 0.01s（服务端 parseWav，query 申报值被覆盖）
+    expect(res.body.item.sha256).toBe(after); // 完整性哈希与磁盘内容一致
+    expect(res.body.item.verifiedAt).toBeTruthy();
     expect(fs.readFileSync(file).toString('ascii', 0, 4)).toBe('RIFF');
+    expect(fs.readdirSync(path.join(libraryDir, 'files', '.tmp')).length).toBe(0); // 原子写入不留临时/备份残留
   });
 
   it('PUT overwrite: 404 unknown id, 400 without file', async () => {

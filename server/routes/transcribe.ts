@@ -4,7 +4,6 @@
  *     每次调用写入 generations 留痕（含失败）。
  */
 import { Router } from 'express';
-import multer from 'multer';
 import {
   whisperTranscribe,
   resolveTranscribeEngine,
@@ -15,10 +14,9 @@ import { ollamaIsAvailable, ollamaGenerateJson } from '../engines/reasoning';
 import { getGeminiClient, hasGeminiApiKey } from '../engines/geminiClient';
 import { WorkerNotReadyError } from '../engines/qwenWorker';
 import { fail } from './respond';
+import { uploadSingle } from './upload';
 import { describeError } from '../engines/errors';
 import { recordGeneration } from '../db/generationsStore';
-
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 512 * 1024 * 1024 } });
 
 function generationId(): string {
   return `asr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -26,7 +24,7 @@ function generationId(): string {
 
 export const transcribeRouter = Router();
 
-transcribeRouter.post('/transcribe-audio', upload.single('audio'), async (req, res) => {
+transcribeRouter.post('/transcribe-audio', uploadSingle('audio'), async (req, res) => {
   try {
     const transcribeModel = String(req.body?.transcribeModel || 'gemini-2.5-flash');
     const language = ['auto', 'zh', 'en'].includes(String(req.body?.language)) ? String(req.body.language) as 'auto' | 'zh' | 'en' : 'auto';

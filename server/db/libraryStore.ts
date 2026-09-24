@@ -2,7 +2,9 @@
  * Semovix Voice Studio - 素材库持久化
  * 音频文件落磁盘 (<libraryDir>/files/)，元数据存 SQLite (<libraryDir>/library.db)。
  * 表结构由版本化迁移（server/db/migrations.ts）管理。
+ * 音频写入走原子路径：tmp → fsync → backup → rename → DB tx → 回滚恢复（P01）。
  */
+import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -45,9 +47,13 @@ export interface LibraryItemRow {
   waveformData?: string | null;
   metadata?: string | null;
   fileName?: string | null;
+  sha256?: string | null;
+  mimeType?: string | null;
+  verifiedAt?: string | null;
 }
 
-const SAFE_ID = /^[a-zA-Z0-9_-]{1,128}$/;
+/** 素材/文件夹 ID 白名单（路由层据此返回 400 invalid_id，而非 500） */
+export const SAFE_ID = /^[a-zA-Z0-9_-]{1,128}$/;
 
 function assertSafeId(id: string): void {
   if (!SAFE_ID.test(id)) throw new Error(`非法素材 ID: ${id}`);
@@ -81,6 +87,9 @@ function rowToItem(row: LibraryItemRow): any {
     transcript: row.transcript ?? undefined,
     waveformData: parseJson<number[]>(row.waveformData, []),
     metadata: parseJson<Record<string, any>>(row.metadata, {}),
+    sha256: row.sha256 ?? undefined,
+    mimeType: row.mimeType ?? undefined,
+    verifiedAt: row.verifiedAt ?? undefined,
     audioUrl: `/api/library/file/${row.id}`,
   };
 }
@@ -107,15 +116,17 @@ export function saveItem(item: any): any {
   getDb().prepare(`
     INSERT INTO items (id, title, description, category, duration, sampleRate, channels, format,
                        fileSize, createdAt, updatedAt, tags, rating, folderId, transcript,
-                       waveformData, metadata, fileName)
+                       waveformData, metadata, fileName, sha256, mimeType, verifiedAt)
     VALUES (@id, @title, @description, @category, @duration, @sampleRate, @channels, @format,
             @fileSize, @createdAt, @updatedAt, @tags, @rating, @folderId, @transcript,
-            @waveformData, @metadata, @fileName)
+            @waveformData, @metadata, @fileName, @sha256, @mimeType, @verifiedAt)
     ON CONFLICT(id) DO UPDATE SET
       title=@title, description=@description, category=@category, duration=@duration,
       sampleRate=@sampleRate, channels=@channels, format=@format, fileSize=@fileSize,
       updatedAt=@updatedAt, tags=@tags, rating=@rating, folderId=@folderId,
-      transcript=@transcript, waveformData=@waveformData, metadata=@metadata, fileName=@fileName
+      transcript=@transcript, waveformData=@waveformData, metadata=@metadata, fileName=@fileName,
+      sha256=COALESCE(@sha256, sha256), mimeType=COALESCE(@mimeType, mimeType),
+      verifiedAt=COALESCE(@verifiedAt, verifiedAt)
   `).run({
     id: String(item.id),
     title: item.title ?? '未命名素材',
@@ -135,6 +146,9 @@ export function saveItem(item: any): any {
     waveformData: JSON.stringify(item.waveformData ?? []),
     metadata: JSON.stringify(item.metadata ?? {}),
     fileName,
+    sha256: item.sha256 ?? null,
+    mimeType: item.mimeType ?? null,
+    verifiedAt: item.verifiedAt ?? null,
   });
   return getItem(String(item.id));
 }
@@ -156,12 +170,126 @@ export function deleteItem(id: string): boolean {
   return true;
 }
 
-export function writeItemFile(id: string, format: string, data: Buffer): { fileName: string; size: number } {
+export interface AtomicFileMeta {
+  fileSize: number;
+  duration?: number;
+  sampleRate?: number;
+  channels?: number;
+  sha256: string;
+  mimeType: string | null;
+  verifiedAt: string;
+}
+
+export interface AtomicWriteResult {
+  fileName: string;
+  size: number;
+  sha256: string;
+  mimeType: string | null;
+  /** 服务端解析出的音频元数据（wav），调用方据此覆盖客户端申报值 */
+  audio: { duration: number; sampleRate: number; channels: number; bitsPerSample: number; dataSize: number } | null;
+}
+
+/**
+ * 原子写入素材音频文件（P01 数据完整性）：
+ *
+ *   files/.tmp/<uuid> → fsync → 备份旧文件(rename) → rename 新文件 → DB 事务更新
+ *   → DB 失败时回滚（删新文件、恢复备份）→ 成功后删除备份。
+ *
+ * updateMeta 可注入（测试用）：默认在事务里 UPDATE items 的完整性列。
+ * 任一环节失败都会让磁盘与数据库回到写入前状态，绝不留下半写文件。
+ */
+export function writeItemFileAtomic(
+  id: string,
+  format: string,
+  data: Buffer,
+  opts: {
+    mimeType?: string | null;
+    audio?: { duration: number; sampleRate: number; channels: number; bitsPerSample?: number; dataSize?: number } | null;
+    updateMeta?: (meta: AtomicFileMeta) => void;
+  } = {}
+): AtomicWriteResult {
   assertSafeId(id);
-  getDb(); // 确保目录与迁移已就绪（修复：全新库上首个写文件请求先于任何读请求时 files/ 不存在）
+  getDb(); // 确保目录与迁移已就绪（全新库上首个写文件请求先于任何读请求时 files/ 不存在）
+  const { files } = libraryDirs();
+  const tmpDir = path.join(files, '.tmp');
+  fs.mkdirSync(tmpDir, { recursive: true });
+
   const fileName = itemFileName(id, format);
-  fs.writeFileSync(path.join(libraryDirs().files, fileName), data);
-  return { fileName, size: data.length };
+  const finalPath = path.join(files, fileName);
+  const uuid = crypto.randomUUID();
+  const tmpPath = path.join(tmpDir, `${uuid}.tmp`);
+  const backupPath = path.join(tmpDir, `${uuid}.bak`);
+
+  // 1) 先写临时文件并 fsync（数据真正落盘后才动旧文件）
+  fs.writeFileSync(tmpPath, data);
+  const fd = fs.openSync(tmpPath, 'r+');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const sha256 = crypto.createHash('sha256').update(data).digest('hex');
+
+  // 2) 备份旧文件（存在时）→ 临时文件就位
+  const hadExisting = fs.existsSync(finalPath);
+  if (hadExisting) fs.renameSync(finalPath, backupPath);
+  let renamed = false;
+  try {
+    fs.renameSync(tmpPath, finalPath);
+    renamed = true;
+
+    // 3) DB 事务更新完整性元数据（失败 → 回滚磁盘）
+    const meta: AtomicFileMeta = {
+      fileSize: data.length,
+      sha256,
+      mimeType: opts.mimeType ?? null,
+      verifiedAt: new Date().toISOString(),
+    };
+    if (opts.audio) {
+      meta.duration = opts.audio.duration;
+      meta.sampleRate = opts.audio.sampleRate;
+      meta.channels = opts.audio.channels;
+    }
+    const update = opts.updateMeta ?? (m => {
+      getDb().prepare(`
+        UPDATE items SET fileSize=@fileSize, duration=COALESCE(@duration, duration),
+          sampleRate=COALESCE(@sampleRate, sampleRate), channels=COALESCE(@channels, channels),
+          sha256=@sha256, mimeType=@mimeType, verifiedAt=@verifiedAt, updatedAt=@verifiedAt
+        WHERE id=@id
+      `).run({ ...m, duration: m.duration ?? null, sampleRate: m.sampleRate ?? null, channels: m.channels ?? null, id });
+    });
+    getDb().transaction(() => update(meta))();
+  } catch (e) {
+    // 回滚：删除新文件，恢复备份
+    if (renamed && fs.existsSync(finalPath)) {
+      fs.unlinkSync(finalPath);
+    }
+    if (hadExisting && fs.existsSync(backupPath)) {
+      fs.renameSync(backupPath, finalPath);
+    }
+    try { fs.unlinkSync(tmpPath); } catch { /* 临时文件可能已 rename 走 */ }
+    throw e;
+  }
+
+  // 4) 成功：清理备份
+  if (hadExisting && fs.existsSync(backupPath)) {
+    fs.unlinkSync(backupPath);
+  }
+  return {
+    fileName,
+    size: data.length,
+    sha256,
+    mimeType: opts.mimeType ?? null,
+    audio: opts.audio
+      ? {
+          duration: opts.audio.duration,
+          sampleRate: opts.audio.sampleRate,
+          channels: opts.audio.channels,
+          bitsPerSample: opts.audio.bitsPerSample ?? 0,
+          dataSize: opts.audio.dataSize ?? 0,
+        }
+      : null,
+  };
 }
 
 export function readItemFile(id: string): { filePath: string; fileName: string } | null {
