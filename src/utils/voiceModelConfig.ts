@@ -22,6 +22,10 @@ export const DEFAULT_VOICE_MODEL_CONFIG: VoiceModelConfig = {
     name: '嘉宾',
     voice: 'Puck',
   },
+  // P01：音色选择按 provider 隔离（Gemini 默认 Kore/Puck；Qwen 目录就绪后归一化回退首项）
+  voiceSelections: {
+    gemini: { defaultVoice: 'Kore', dialogueSpeaker1Voice: 'Kore', dialogueSpeaker2Voice: 'Puck' },
+  },
   pacing: 'natural',
 };
 
@@ -44,11 +48,31 @@ function normalizeModelId(id: unknown, fallback: string): string {
   return typeof id === 'string' && LEGACY_MODEL_ID_MAP[id] ? LEGACY_MODEL_ID_MAP[id] : (typeof id === 'string' && id ? id : fallback);
 }
 
+/**
+ * 旧配置只有单一 defaultVoice / dialogueSpeakerN.voice（Gemini 时代字段）：
+ * 迁移进 voiceSelections.gemini 一次（P01 跨 provider 隔离）。
+ * legacy 字段本身保留一个版本，仅作回滚兼容，不再写入。
+ */
+function migrateLegacyVoiceSelection(parsed: Partial<VoiceModelConfig>): Partial<VoiceModelConfig> {
+  if (parsed.voiceSelections?.gemini) return parsed; // 已是新格式
+  return {
+    ...parsed,
+    voiceSelections: {
+      ...parsed.voiceSelections,
+      gemini: {
+        defaultVoice: parsed.defaultVoice ?? null,
+        dialogueSpeaker1Voice: parsed.dialogueSpeaker1?.voice ?? null,
+        dialogueSpeaker2Voice: parsed.dialogueSpeaker2?.voice ?? null,
+      },
+    },
+  };
+}
+
 export function getVoiceModelConfig(): VoiceModelConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_VOICE_MODEL_CONFIG;
-    const parsed = JSON.parse(raw);
+    const parsed = migrateLegacyVoiceSelection(JSON.parse(raw));
     const merged = { ...DEFAULT_VOICE_MODEL_CONFIG, ...parsed };
     merged.ttsModel = normalizeModelId(merged.ttsModel, DEFAULT_VOICE_MODEL_CONFIG.ttsModel);
     merged.transcribeModel = normalizeModelId(merged.transcribeModel, DEFAULT_VOICE_MODEL_CONFIG.transcribeModel);
@@ -110,7 +134,7 @@ export const AVAILABLE_TTS_MODELS: ModelOptionInfo[] = [
     id: 'qwen3-tts-local',
     name: 'Qwen3-TTS 1.7B (本地)',
     provider: 'Alibaba Qwen · 本地引擎',
-    description: '运行在本机（MPS）的 Qwen3-TTS-1.7B-CustomVoice：完全离线、零 API 费用，9 种预置音色，支持情感与停顿指令，输出 24kHz WAV。需先双击「启动网页版.command」运行引擎。',
+    description: '运行在本机（MPS）的 Qwen3-TTS-1.7B-CustomVoice：完全离线、零 API 费用，9 种预置音色，支持情感与停顿指令，输出 24kHz WAV。需先双击 worker/「启动Worker.command」启动 FastAPI Worker（端口 8800），首次合成会自动预热等待模型加载。',
     tag: '本地离线零成本',
     badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
     capabilities: ['完全离线免费', '9 种预置音色', '情感/停顿指令控制', '24kHz WAV 输出'],
@@ -150,7 +174,7 @@ export const AVAILABLE_TRANSCRIBE_MODELS: ModelOptionInfo[] = [
     id: 'whisper-local',
     name: 'Whisper large-v3-turbo (本地)',
     provider: 'OpenAI · 本地引擎',
-    description: '运行在本机（MPS）的 Whisper large-v3-turbo：完全离线转写，支持中英混合与超过 30 秒的长音频，转录后由本地 Qwen 生成摘要/情绪/标签。需先双击 Whisper-ASR「启动网页版.command」运行引擎。',
+    description: '运行在本机（MPS）的 Whisper large-v3-turbo：完全离线转写，支持中英混合与超过 30 秒的长音频，转录后由本地 Qwen 生成摘要/情绪/标签。与 Qwen3-TTS 共用 worker/「启动Worker.command」（端口 8800），引擎冷启动时自动预热等待。',
     tag: '本地离线转写',
     badgeClass: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
     capabilities: ['完全离线免费', '中英混合转写', '长音频顺序生成', '本地摘要与标签'],

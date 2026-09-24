@@ -126,11 +126,25 @@ export interface AudioEditSettings {
   normalize: boolean;
 }
 
+/**
+ * TTS 音色提供方（硬性约束 #5：Google Voice ID 与 Qwen Speaker ID 是两套
+ * 独立命名空间，选择按 provider 隔离，切换引擎互不污染）。
+ */
+export type VoiceProvider = 'gemini' | 'qwen3Tts' | 'webSpeech';
+
+/** 按 provider 保存的音色选择（null = 尚未选择，由目录归一化回退首项） */
+export interface ProviderVoiceSelection {
+  defaultVoice: string | null;
+  dialogueSpeaker1Voice: string | null;
+  dialogueSpeaker2Voice: string | null;
+}
+
 export interface VoiceModelConfig {
   ttsModel: string; // e.g. 'gemini-2.5-flash-preview-tts' 或 'qwen3-tts-local'
   transcribeModel: string; // e.g. 'gemini-2.5-flash'
   reasoningModel: string; // e.g. 'gemini-2.5-flash'
-  defaultVoice: string; // 'Kore' | 'Puck' | 'Fenrir' | 'Charon' | 'Zephyr'
+  /** @deprecated 旧单一音色字段（Gemini 时代）；读取时迁移进 voiceSelections.gemini，仅保留一个版本 */
+  defaultVoice: string;
   defaultEmotion: string;
   speed: number; // 0.75 - 1.5
   temperature: number; // 0.1 - 1.2
@@ -140,12 +154,16 @@ export interface VoiceModelConfig {
   languageHint: 'zh-CN' | 'en-US' | 'auto' | 'bilingual';
   dialogueSpeaker1: {
     name: string;
+    /** @deprecated 见 voiceSelections */
     voice: string;
   };
   dialogueSpeaker2: {
     name: string;
+    /** @deprecated 见 voiceSelections */
     voice: string;
   };
+  /** 按 provider 隔离的音色选择（P01）：键为当前 TTS 引擎对应的 provider */
+  voiceSelections: Partial<Record<VoiceProvider, ProviderVoiceSelection>>;
   pacing: 'tight' | 'natural' | 'relaxed';
 }
 

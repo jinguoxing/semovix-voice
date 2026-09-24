@@ -1,37 +1,39 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  X, 
-  Settings2, 
-  Check, 
-  Play, 
-  Pause, 
-  RotateCcw, 
-  Sparkles, 
-  Activity, 
-  Sliders, 
-  Users, 
-  Volume2, 
-  Cpu, 
-  FileText, 
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  X,
+  Check,
+  Play,
+  Pause,
+  RotateCcw,
+  Sparkles,
+  Activity,
+  Sliders,
+  Users,
+  Volume2,
+  Cpu,
+  FileText,
   CheckCircle2,
   AlertCircle,
-  HelpCircle,
   Radio,
-  Layers,
-  CheckSquare
+  RefreshCw
 } from 'lucide-react';
 import { VoiceModelConfig } from '../types/audio';
-import { 
-  getVoiceModelConfig, 
-  saveVoiceModelConfig, 
-  resetVoiceModelConfig, 
-  AVAILABLE_VOICES, 
-  VoicePersonaInfo,
+import {
+  getVoiceModelConfig,
+  saveVoiceModelConfig,
+  resetVoiceModelConfig,
   AVAILABLE_TTS_MODELS,
   AVAILABLE_TRANSCRIBE_MODELS,
   AVAILABLE_REASONING_MODELS,
   ModelOptionInfo
 } from '../utils/voiceModelConfig';
+import {
+  providerForTtsModel,
+  normalizeVoiceSelection,
+  withVoiceSelection,
+  type ProviderVoiceEntry,
+} from '../utils/voiceProvider';
+import { useVoiceCatalog } from '../hooks/useVoiceCatalog';
 import { getAudioContext } from '../utils/audioEngine';
 
 interface VoiceModelConfigModalProps {
@@ -54,6 +56,14 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
   const handleUpdate = <K extends keyof VoiceModelConfig>(key: K, value: VoiceModelConfig[K]) => {
     setConfig(prev => ({ ...prev, [key]: value }));
   };
+
+  // P01 跨 Provider 音色：目录与冷启动状态按当前 TTS 模型对应的 provider 解析（硬性约束 #5/#6）
+  const provider = providerForTtsModel(config.ttsModel);
+  const catalog = useVoiceCatalog(provider);
+  const selection = useMemo(
+    () => normalizeVoiceSelection(config, provider, catalog.voices),
+    [config, provider, catalog.voices]
+  );
 
   // Audio preview state
   const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
@@ -84,9 +94,21 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Handle voice audition/preview
-  const handlePlayPreview = async (voice: VoicePersonaInfo) => {
+  // Handle voice audition/preview（仅使用当前 provider 目录内的 ID，硬性约束 #5/#6）
+  const handlePlayPreview = async (voice: ProviderVoiceEntry) => {
     getAudioContext();
+
+    if (provider === 'webSpeech') {
+      // 浏览器音色仅实时预览，不产生可保存音频（与 web-speech-native 模式一致）
+      try {
+        const utter = new SpeechSynthesisUtterance(voice.previewPrompt || voice.name);
+        utter.voice = window.speechSynthesis?.getVoices().find(v => v.voiceURI === voice.id) ?? null;
+        window.speechSynthesis?.speak(utter);
+      } catch (e) {
+        console.warn('Web Speech 预览失败', e);
+      }
+      return;
+    }
 
     if (previewingVoiceId === voice.id && previewAudio) {
       previewAudio.pause();
@@ -106,7 +128,7 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: voice.previewPrompt,
+          text: voice.previewPrompt || `这是${voice.name}的试听样音。`,
           voiceName: voice.id,
           speed: config.speed,
           temperature: config.temperature,
@@ -133,8 +155,15 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
     }
   };
 
-  // Run full latency & model pipeline diagnostic
+  // Run full latency & model pipeline diagnostic（自检使用当前 provider 的默认音色，P01）
   const handleRunDiagnostic = async () => {
+    if (!selection.defaultVoice) {
+      setTestResult({
+        status: 'error',
+        message: catalog.error || '当前引擎音色目录不可用（模型未就绪），无法自检。请先等待引擎加载或切换模型。',
+      });
+      return;
+    }
     setIsTestingLatency(true);
     setTestResult({ status: 'idle' });
     const startTime = performance.now();
@@ -145,7 +174,7 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: '系统声学链路自检正常，语音大模型已就绪。',
-          voiceName: config.defaultVoice,
+          voiceName: selection.defaultVoice,
           temperature: config.temperature,
           ttsModel: config.ttsModel,
         }),
@@ -166,7 +195,7 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
         setTestResult({
           status: 'error',
           latencyMs,
-          message: data.error || '语音大模型生成失败，请确认 API Key 配置。',
+          message: data.error || '语音大模型生成失败，请确认引擎已启动 / API Key 配置。',
         });
       }
     } catch (e: any) {
@@ -181,8 +210,9 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
     }
   };
 
-  // Save current config
+  // Save current config（目录未就绪时禁止保存：宁缺毋假，硬性约束 #5/#6）
   const handleSave = () => {
+    if (selection.catalogUnavailable) return;
     saveVoiceModelConfig(config);
     if (onConfigChanged) {
       onConfigChanged(config);
@@ -589,95 +619,154 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
             </div>
           )}
 
-          {/* TAB 1: Voice Personas */}
+          {/* TAB 1: Voice Personas（按 provider 分列，硬性约束 #5/#6） */}
           {activeTab === 'personas' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-sm font-semibold text-neutral-200">预置原生音色人格</h3>
+                  <h3 className="text-sm font-semibold text-neutral-200">
+                    {provider === 'gemini' && 'Gemini 官方音色人格'}
+                    {provider === 'qwen3Tts' && 'Qwen3-TTS 官方音色目录'}
+                    {provider === 'webSpeech' && '浏览器系统音色（仅实时预览）'}
+                  </h3>
                   <p className="text-xs text-neutral-400">
-                    Gemini 多模态语音专属音色库，点击右侧扬声器按钮即可即时试听声线表现
+                    {provider === 'gemini' && 'Google 多模态语音专属音色库，点击右侧按钮即时试听'}
+                    {provider === 'qwen3Tts' && '目录来自 Worker 模型运行时（官方精确 ID），ID 不在目录内一律拒绝'}
+                    {provider === 'webSpeech' && '调用系统 speechSynthesis，仅供预览，不会生成可保存素材'}
                   </p>
                 </div>
                 <div className="text-xs font-mono text-neutral-400 bg-neutral-950 px-2.5 py-1 rounded-lg border border-neutral-800">
-                  当前默认: <span className="text-cyan-400 font-semibold">{config.defaultVoice}</span>
+                  当前默认: <span className="text-cyan-400 font-semibold">{selection.defaultVoice ?? '（目录未就绪）'}</span>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                {AVAILABLE_VOICES.map((voice) => {
-                  const isDefault = config.defaultVoice === voice.id;
-                  const isPlaying = previewingVoiceId === voice.id;
-
-                  return (
-                    <div
-                      key={voice.id}
-                      onClick={() => setConfig({ ...config, defaultVoice: voice.id })}
-                      className={`relative p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-3 ${
-                        isDefault
-                          ? 'bg-neutral-800/80 border-cyan-500/60 shadow-lg shadow-cyan-950/20 ring-1 ring-cyan-500/40'
-                          : 'bg-neutral-950/50 border-neutral-800 hover:border-neutral-700 hover:bg-neutral-900/60'
-                      }`}
+              {/* 引擎冷启动状态（P01）：如实展示，绝不伪造“已连接” */}
+              {provider === 'qwen3Tts' && (
+                <div className={`flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl border text-xs ${
+                  catalog.engineState === 'ready'
+                    ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300'
+                    : catalog.engineState === 'error'
+                      ? 'bg-rose-950/30 border-rose-500/40 text-rose-200'
+                      : 'bg-amber-950/20 border-amber-500/30 text-amber-200'
+                }`}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    {(catalog.engineState === 'loading' || catalog.warming) ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    ) : (
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${
+                        catalog.engineState === 'ready' ? 'bg-emerald-400' : catalog.engineState === 'error' ? 'bg-rose-400' : 'bg-amber-400'
+                      }`} />
+                    )}
+                    <span className="font-mono font-semibold">
+                      Qwen3-TTS 引擎: {catalog.engineState === 'loading' || catalog.warming ? '模型加载中…（首次约 30-90 秒）' : catalog.engineState}
+                    </span>
+                    {catalog.error && (
+                      <span className="truncate text-neutral-400" title={catalog.error}>{catalog.error}</span>
+                    )}
+                  </div>
+                  {catalog.engineState !== 'ready' && (
+                    <button
+                      onClick={() => void catalog.warmup()}
+                      disabled={catalog.warming}
+                      className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-[11px] font-semibold disabled:opacity-50 shrink-0"
                     >
-                      <div>
-                        <div className="flex items-start justify-between gap-2 mb-1.5">
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-sm text-neutral-100">{voice.name}</span>
-                            <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${voice.badgeColor}`}>
-                              {voice.gender} • {voice.tag}
-                            </span>
-                          </div>
+                      {catalog.warming ? '预热中…' : catalog.engineState === 'error' ? '重试预热' : '立即预热'}
+                    </button>
+                  )}
+                </div>
+              )}
 
-                          <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              onClick={() => handlePlayPreview(voice)}
-                              disabled={isPreviewLoading && previewingVoiceId === voice.id}
-                              className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 text-xs font-medium ${
-                                isPlaying
-                                  ? 'bg-cyan-500 text-neutral-950 animate-pulse'
-                                  : 'bg-neutral-800 text-cyan-400 hover:bg-cyan-500/20 border border-neutral-700'
-                              }`}
-                              title="一键试听该声线样音"
-                            >
-                              {isPlaying ? (
-                                <>
-                                  <Pause className="w-3.5 h-3.5 fill-current" />
-                                  <span className="text-[10px]">播放中</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Play className="w-3.5 h-3.5 fill-current" />
-                                  <span className="text-[10px]">试听</span>
-                                </>
-                              )}
-                            </button>
+              {selection.catalogUnavailable ? (
+                <div className="text-center py-10 px-4 bg-neutral-950/60 border border-neutral-800 rounded-xl space-y-2">
+                  <AlertCircle className="w-6 h-6 text-amber-400 mx-auto" />
+                  <p className="text-xs text-neutral-300 font-semibold">
+                    {provider === 'qwen3Tts' ? 'Qwen 音色目录尚未就绪' : '音色目录不可用'}
+                  </p>
+                  <p className="text-[11px] text-neutral-500 leading-relaxed max-w-md mx-auto">
+                    {provider === 'qwen3Tts'
+                      ? '请先启动 worker/「启动Worker.command」（端口 8800）；引擎加载完成并就绪后，官方音色目录会自动出现。目录就绪前无法保存 Qwen 音色选择。'
+                      : catalog.error || '当前环境未提供可用音色。'}
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {catalog.voices.map((voice) => {
+                    const isDefault = selection.defaultVoice === voice.id;
+                    const isPlaying = previewingVoiceId === voice.id;
 
-                            {isDefault && (
-                              <span className="w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
-                                <Check className="w-3.5 h-3.5" />
+                    return (
+                      <div
+                        key={voice.id}
+                        onClick={() => setConfig(withVoiceSelection(config, provider, { defaultVoice: voice.id }))}
+                        className={`relative p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-3 ${
+                          isDefault
+                            ? 'bg-neutral-800/80 border-cyan-500/60 shadow-lg shadow-cyan-950/20 ring-1 ring-cyan-500/40'
+                            : 'bg-neutral-950/50 border-neutral-800 hover:border-neutral-700 hover:bg-neutral-900/60'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-start justify-between gap-2 mb-1.5">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-sm text-neutral-100">{voice.name}</span>
+                              <span className="text-[10px] font-medium px-2 py-0.5 rounded-full border border-neutral-700 bg-neutral-900 text-neutral-300">
+                                {voice.gender} • {voice.tag}
                               </span>
-                            )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                              <button
+                                onClick={() => handlePlayPreview(voice)}
+                                disabled={isPreviewLoading && previewingVoiceId === voice.id}
+                                className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 text-xs font-medium ${
+                                  isPlaying
+                                    ? 'bg-cyan-500 text-neutral-950 animate-pulse'
+                                    : 'bg-neutral-800 text-cyan-400 hover:bg-cyan-500/20 border border-neutral-700'
+                                }`}
+                                title="一键试听该声线样音"
+                              >
+                                {isPlaying ? (
+                                  <>
+                                    <Pause className="w-3.5 h-3.5 fill-current" />
+                                    <span className="text-[10px]">播放中</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Play className="w-3.5 h-3.5 fill-current" />
+                                    <span className="text-[10px]">试听</span>
+                                  </>
+                                )}
+                              </button>
+
+                              {isDefault && (
+                                <span className="w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+                                  <Check className="w-3.5 h-3.5" />
+                                </span>
+                              )}
+                            </div>
                           </div>
+
+                          <p className="text-xs text-neutral-300 mb-2 leading-relaxed">
+                            {voice.desc}
+                          </p>
+
+                          {provider === 'qwen3Tts' && (
+                            <div className="text-[11px] font-mono text-cyan-300/80 bg-neutral-950/80 p-2 rounded-lg border border-neutral-800/80 break-all">
+                              {voice.id}
+                            </div>
+                          )}
                         </div>
 
-                        <p className="text-xs text-neutral-300 mb-2 leading-relaxed">
-                          {voice.desc}
-                        </p>
-
-                        <div className="text-[11px] text-neutral-400 bg-neutral-950/80 p-2 rounded-lg border border-neutral-800/80">
-                          <span className="text-neutral-500 font-medium">推荐场景: </span>
-                          {voice.bestFor}
-                        </div>
+                        {voice.previewPrompt && (
+                          <div className="pt-2 border-t border-neutral-800/60 flex items-center justify-between text-[10px] text-neutral-500">
+                            <span>试听样本文本:</span>
+                            <span className="truncate max-w-[200px] text-neutral-400 italic">“{voice.previewPrompt}”</span>
+                          </div>
+                        )}
                       </div>
-
-                      <div className="pt-2 border-t border-neutral-800/60 flex items-center justify-between text-[10px] text-neutral-500">
-                        <span>试听样本文本:</span>
-                        <span className="truncate max-w-[200px] text-neutral-400 italic">“{voice.previewPrompt}”</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -828,16 +917,15 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-[11px] text-neutral-400 block mb-1">分配发音人音色</label>
+                    <label className="text-[11px] text-neutral-400 block mb-1">分配发音人音色（按当前引擎目录）</label>
                     <select
-                      value={config.dialogueSpeaker1.voice}
-                      onChange={(e) => setConfig({
-                        ...config,
-                        dialogueSpeaker1: { ...config.dialogueSpeaker1, voice: e.target.value }
-                      })}
-                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-1.5 text-xs text-neutral-200 focus:outline-none focus:border-cyan-500"
+                      value={selection.speaker1Voice ?? ''}
+                      onChange={(e) => setConfig(withVoiceSelection(config, provider, { dialogueSpeaker1Voice: e.target.value || null }))}
+                      disabled={selection.catalogUnavailable}
+                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-1.5 text-xs text-neutral-200 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
                     >
-                      {AVAILABLE_VOICES.map(v => (
+                      {selection.catalogUnavailable && <option value="">（音色目录未就绪）</option>}
+                      {catalog.voices.map(v => (
                         <option key={v.id} value={v.id}>
                           {v.name} ({v.gender} - {v.tag})
                         </option>
@@ -869,16 +957,15 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-[11px] text-neutral-400 block mb-1">分配发音人音色</label>
+                    <label className="text-[11px] text-neutral-400 block mb-1">分配发音人音色（按当前引擎目录）</label>
                     <select
-                      value={config.dialogueSpeaker2.voice}
-                      onChange={(e) => setConfig({
-                        ...config,
-                        dialogueSpeaker2: { ...config.dialogueSpeaker2, voice: e.target.value }
-                      })}
-                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-1.5 text-xs text-neutral-200 focus:outline-none focus:border-cyan-500"
+                      value={selection.speaker2Voice ?? ''}
+                      onChange={(e) => setConfig(withVoiceSelection(config, provider, { dialogueSpeaker2Voice: e.target.value || null }))}
+                      disabled={selection.catalogUnavailable}
+                      className="w-full bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-1.5 text-xs text-neutral-200 focus:outline-none focus:border-cyan-500 disabled:opacity-50"
                     >
-                      {AVAILABLE_VOICES.map(v => (
+                      {selection.catalogUnavailable && <option value="">（音色目录未就绪）</option>}
+                      {catalog.voices.map(v => (
                         <option key={v.id} value={v.id}>
                           {v.name} ({v.gender} - {v.tag})
                         </option>
@@ -1097,7 +1184,9 @@ export const VoiceModelConfigModal: React.FC<VoiceModelConfigModalProps> = ({
 
             <button
               onClick={handleSave}
-              className="px-5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-cyan-500 to-indigo-600 text-white shadow-lg shadow-cyan-950/50 hover:opacity-95 active:scale-95 transition-all flex items-center gap-1.5"
+              disabled={selection.catalogUnavailable}
+              title={selection.catalogUnavailable ? '当前引擎音色目录未就绪，暂不能保存音色配置（可先切回 Gemini 或等待引擎加载）' : undefined}
+              className="px-5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-cyan-500 to-indigo-600 text-white shadow-lg shadow-cyan-950/50 hover:opacity-95 active:scale-95 transition-all flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {hasSaved ? (
                 <>

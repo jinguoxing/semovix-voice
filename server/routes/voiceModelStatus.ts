@@ -20,11 +20,9 @@ const WARMUP_ENGINES: Record<string, WorkerEngineId> = {
 };
 
 voiceModelStatusRouter.get('/voice-model/status', async (_req, res) => {
-  const [worker, ollamaUp, qwenCatalog] = await Promise.all([
-    getWorkerStatus(),
-    ollamaIsAvailable(),
-    qwenVoiceCatalog(),
-  ]);
+  const [worker, ollamaUp] = await Promise.all([getWorkerStatus(), ollamaIsAvailable()]);
+  // 引擎已 ready 时绕过目录缓存 TTL：冷启动→就绪的瞬间就能拿到官方音色（P01）
+  const qwenCatalog = await qwenVoiceCatalog({ force: worker.qwen_tts.state === 'ready' });
 
   const geminiReady = hasGeminiApiKey();
   const engines = [

@@ -1,24 +1,25 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Radio, 
-  Sparkles, 
-  Play, 
-  Pause, 
-  Download, 
-  FolderPlus, 
-  Scissors, 
-  RefreshCw, 
-  Volume2, 
-  Users, 
-  User, 
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  Radio,
+  Sparkles,
+  Play,
+  Pause,
+  Download,
+  FolderPlus,
+  Scissors,
+  RefreshCw,
+  Volume2,
+  Users,
+  User,
   Check,
-  FileCheck,
   Sliders,
   Cpu,
   AlertTriangle
 } from 'lucide-react';
 import { AudioItem, AudioFolder } from '../types/audio';
 import { getVoiceModelConfig, VoiceModelConfig } from '../utils/voiceModelConfig';
+import { providerForTtsModel, normalizeVoiceSelection, providerIdForTtsModel } from '../utils/voiceProvider';
+import { useVoiceCatalog } from '../hooks/useVoiceCatalog';
 
 interface AudioTTSStudioProps {
   folders: AudioFolder[];
@@ -26,15 +27,6 @@ interface AudioTTSStudioProps {
   onOpenEditor: (item: AudioItem) => void;
   onOpenVoiceModelConfig?: () => void;
 }
-
-/** Google Gemini 官方 Voice ID（硬性约束 #5：仅用于 gemini 引擎，绝不发给 Qwen） */
-const GEMINI_VOICES = [
-  { id: 'Kore', name: 'Kore', tag: '沉稳睿智', desc: '权威有深度的男中音，适合纪录片、科技发布与讲座', gender: '男声' },
-  { id: 'Puck', name: 'Puck', tag: '活力轻快', desc: '热情朝气的高频男声，适合播客、短视频与广告推广', gender: '男声' },
-  { id: 'Fenrir', name: 'Fenrir', tag: '磁性厚重', desc: '极具穿透力与叙事感的电影级重低音声线', gender: '男声' },
-  { id: 'Charon', name: 'Charon', tag: '专业播报', desc: '咬字清晰干练的播音级声线，适合新闻与商业报告', gender: '男声' },
-  { id: 'Zephyr', name: 'Zephyr', tag: '温暖知性', desc: '柔和细腻充满共情力的声线，适合有声书与冥想伴读', gender: '女声' },
-];
 
 export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
   folders,
@@ -45,12 +37,12 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
   const [modelConfig, setModelConfig] = useState<VoiceModelConfig>(getVoiceModelConfig());
   const [mode, setMode] = useState<'single' | 'dialogue'>('single');
   const [text, setText] = useState('欢迎来到未来声音实验室。在这里，每一段文字都可以转化为极具表现力与情感张力的声音艺术。');
-  const [selectedVoice, setSelectedVoice] = useState(modelConfig.defaultVoice || 'Kore');
+  const [selectedVoice, setSelectedVoice] = useState<string | null>(null);
   const [selectedEmotion, setSelectedEmotion] = useState(modelConfig.defaultEmotion || '沉稳专业');
-  
+
   // Dialogue mode state
-  const [speaker1Voice, setSpeaker1Voice] = useState(modelConfig.dialogueSpeaker1?.voice || 'Kore');
-  const [speaker2Voice, setSpeaker2Voice] = useState(modelConfig.dialogueSpeaker2?.voice || 'Puck');
+  const [speaker1Voice, setSpeaker1Voice] = useState<string | null>(null);
+  const [speaker2Voice, setSpeaker2Voice] = useState<string | null>(null);
   const [dialogueText, setDialogueText] = useState(
 `主持人: 欢迎收听前沿探索，今天我们聊聊生成式音频技术。
 嘉宾: 是的！如今声音合成不仅更加拟真，更赋予了创作者无限的想象空间。`
@@ -61,46 +53,36 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
     const handleConfigUpdate = (e: any) => {
       const newConfig: VoiceModelConfig = e.detail || getVoiceModelConfig();
       setModelConfig(newConfig);
-      setSelectedVoice(newConfig.defaultVoice);
       setSelectedEmotion(newConfig.defaultEmotion);
-      if (newConfig.dialogueSpeaker1?.voice) setSpeaker1Voice(newConfig.dialogueSpeaker1.voice);
-      if (newConfig.dialogueSpeaker2?.voice) setSpeaker2Voice(newConfig.dialogueSpeaker2.voice);
     };
 
     window.addEventListener('voice-model-config-updated', handleConfigUpdate);
     return () => window.removeEventListener('voice-model-config-updated', handleConfigUpdate);
   }, []);
 
-  // 硬性约束 #5/#6：Qwen 官方音色目录来自 /api/voice-model/status（Worker 模型运行时），
-  // 与 Google Voice 目录彻底分开；Worker 未启动时如实为空
-  const [qwenVoices, setQwenVoices] = useState<{ id: string; name: string }[]>([]);
-  useEffect(() => {
-    fetch('/api/voice-model/status')
-      .then(r => r.json())
-      .then(d => setQwenVoices(d?.voices?.qwen3Tts ?? []))
-      .catch(() => setQwenVoices([]));
-  }, []);
+  // P01 跨 Provider 音色（硬性约束 #5/#6）：目录按当前 TTS 模型的 provider 解析，
+  // Gemini 静态目录 / Qwen 走状态接口+自动预热轮询 / WebSpeech 系统音色
+  const provider = providerForTtsModel(modelConfig.ttsModel);
+  const catalog = useVoiceCatalog(provider);
+  const selection = useMemo(
+    () => normalizeVoiceSelection(modelConfig, provider, catalog.voices),
+    [modelConfig, provider, catalog.voices]
+  );
 
-  const isQwenEngine = modelConfig.ttsModel === 'qwen3-tts-local';
-  const voiceOptions = isQwenEngine
-    ? qwenVoices.map(v => ({
-        id: v.id,
-        name: v.name,
-        tag: '官方ID',
-        desc: 'Qwen3-TTS 官方音色（来自引擎运行时目录，ID 精确匹配）',
-        gender: '官方',
-      }))
-    : GEMINI_VOICES;
-
-  // 引擎切换后，当前声线若不属于该引擎目录则重置为目录首项
+  // 归一化结果变化（配置更新/引擎切换/目录就绪）时同步本地选择；
+  // normalize 已保证 ID 必属于当前 provider 目录（外来 ID 回退目录首项）
   useEffect(() => {
-    const ids = voiceOptions.map(v => v.id);
-    if (ids.length === 0) return;
-    if (!ids.includes(selectedVoice)) setSelectedVoice(ids[0]);
-    if (!ids.includes(speaker1Voice)) setSpeaker1Voice(ids[0]);
-    if (!ids.includes(speaker2Voice)) setSpeaker2Voice(ids[1] || ids[0]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isQwenEngine, qwenVoices.length]);
+    setSelectedVoice(selection.defaultVoice);
+    setSpeaker1Voice(selection.speaker1Voice);
+    setSpeaker2Voice(selection.speaker2Voice);
+  }, [selection.defaultVoice, selection.speaker1Voice, selection.speaker2Voice]);
+
+  // 生成可用性：Qwen 引擎未 ready 或目录未就绪时禁止生成（如实等待预热/启动 Worker）
+  const qwenLoading = provider === 'qwen3Tts' && catalog.engineState !== 'ready';
+  const canGenerate =
+    !selection.catalogUnavailable &&
+    !qwenLoading &&
+    !!(mode === 'single' ? text.trim() : dialogueText.trim());
 
   const [isGenerating, setIsGenerating] = useState(false);
   // 诚实失败（硬性约束 #2）：引擎失败时展示真实原因，不再生成三角波假旁白
@@ -154,6 +136,11 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
   ];
 
   const handleGenerate = async () => {
+    // 目录未就绪时不得猜测音色 ID（硬性约束 #5/#6：宁可不生成，不发送外来 ID）
+    if (!selectedVoice || (mode === 'dialogue' && (!speaker1Voice || !speaker2Voice))) {
+      setGenerationError('当前引擎音色目录未就绪，无法确定音色 ID。请等待引擎加载完成（或先启动 Worker），也可切换到 Gemini 引擎。');
+      return;
+    }
     setIsGenerating(true);
     setSaveSuccess(false);
     setGenerationError(null);
@@ -258,7 +245,7 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
       waveformData: [0.3, 0.6, 0.8, 0.5, 0.9, 0.7, 0.8, 0.4, 0.6, 0.9, 0.5, 0.7],
       metadata: {
         // P01 可追溯：素材自带引擎/模型/官方音色 ID/生成参数/留痕 ID
-        providerId: generatedAudio.ttsModel?.startsWith('gemini') ? 'google' : 'qwen',
+        providerId: providerIdForTtsModel(generatedAudio.ttsModel || modelConfig.ttsModel),
         modelId: generatedAudio.ttsModel,
         providerVoiceId: generatedAudio.voice,
         engine: generatedAudio.engine,
@@ -288,7 +275,11 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
               <h2 className="text-lg font-bold text-neutral-100">AI 智能语音合成工作台 (TTS)</h2>
             </div>
             <p className="text-xs text-neutral-400 mt-1">
-              基于 Google Gemini 语音大模型，提供超自然多角色情感配音与多角色播客对话合成
+              {provider === 'qwen3Tts'
+                ? '本地 Qwen3-TTS 引擎离线合成：官方音色目录 + 情感/停顿指令，24kHz WAV 输出'
+                : provider === 'webSpeech'
+                  ? '浏览器系统语音实时预览（不产生可保存的素材文件）'
+                  : '基于 Google Gemini 语音大模型，提供超自然多角色情感配音与多角色播客对话合成'}
             </p>
           </div>
 
@@ -369,22 +360,62 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
           </div>
         </div>
 
-        {/* Voice Selection Cards */}
+        {/* 引擎冷启动状态条（P01）：如实展示 cold/loading/ready/error/不可达，绝不伪造“已连接” */}
+        {provider === 'qwen3Tts' && catalog.engineState !== 'ready' && (
+          <div className={`flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 rounded-xl border text-xs ${
+            catalog.engineState === 'error'
+              ? 'bg-rose-950/30 border-rose-500/40 text-rose-200'
+              : 'bg-amber-950/20 border-amber-500/30 text-amber-200'
+          }`}>
+            <div className="flex items-center gap-2 min-w-0">
+              {(catalog.engineState === 'loading' || catalog.warming || catalog.engineState === 'cold') ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
+              ) : (
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              )}
+              <span className="font-semibold">
+                Qwen3-TTS 引擎{catalog.engineState === 'unreachable' ? '不可达' : catalog.engineState === 'error' ? '加载失败' : '加载中'}：
+              </span>
+              <span className="truncate text-neutral-300" title={catalog.error ?? undefined}>
+                {catalog.engineState === 'unreachable'
+                  ? '请先启动 worker/「启动Worker.command」（端口 8800）'
+                  : catalog.engineState === 'error'
+                    ? (catalog.error || '未知错误，请查看 Worker 日志')
+                    : catalog.engineState === 'cold'
+                      ? '模型未加载，正在触发预热…'
+                      : '首次加载约需 30-90 秒，就绪后即可生成'}
+              </span>
+            </div>
+            <button
+              onClick={() => void catalog.warmup()}
+              disabled={catalog.warming}
+              className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-[11px] font-semibold disabled:opacity-50 shrink-0"
+            >
+              {catalog.warming ? '预热中…' : catalog.engineState === 'error' ? '重试预热' : '立即预热'}
+            </button>
+          </div>
+        )}
+
+        {/* Voice Selection Cards（按 provider 目录，硬性约束 #5/#6） */}
         {mode === 'single' ? (
           <div>
             <label className="text-xs font-semibold text-neutral-300 uppercase tracking-wider block mb-2">
               选择AI声线 (Voice Model)
               <span className="ml-2 text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral-800 text-cyan-300">
-                {isQwenEngine ? 'Qwen 官方目录' : 'Google Voice'}
+                {provider === 'qwen3Tts' ? 'Qwen 官方目录' : provider === 'webSpeech' ? '浏览器系统音色' : 'Google Voice'}
               </span>
             </label>
-            {isQwenEngine && voiceOptions.length === 0 && (
+            {catalog.voices.length === 0 && (
               <p className="text-xs text-amber-300/90 bg-amber-950/20 border border-amber-500/30 rounded-lg px-3 py-2 mb-2">
-                Worker 未启动或音色目录未加载：请先双击 worker/「启动Worker.command」，刷新页面后自动加载官方音色。
+                {provider === 'qwen3Tts'
+                  ? '音色目录尚未就绪：Worker 启动且模型加载完成后，官方音色会自动出现（上方状态条实时更新）。'
+                  : provider === 'webSpeech'
+                    ? '当前浏览器未暴露系统音色。'
+                    : '音色目录不可用。'}
               </p>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-              {voiceOptions.map((v) => {
+              {catalog.voices.map((v) => {
                 const isSelected = selectedVoice === v.id;
                 return (
                   <div
@@ -417,11 +448,13 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
                 角色 1 (主持人) 声线
               </span>
               <select
-                value={speaker1Voice}
-                onChange={(e) => setSpeaker1Voice(e.target.value)}
-                className="w-full bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2 text-xs text-neutral-200 focus:outline-none focus:border-indigo-500"
+                value={speaker1Voice ?? ''}
+                onChange={(e) => setSpeaker1Voice(e.target.value || null)}
+                disabled={catalog.voices.length === 0}
+                className="w-full bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2 text-xs text-neutral-200 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
               >
-                {voiceOptions.map(v => (
+                {catalog.voices.length === 0 && <option value="">（目录未就绪）</option>}
+                {catalog.voices.map(v => (
                   <option key={v.id} value={v.id}>{v.name} ({v.tag} - {v.gender})</option>
                 ))}
               </select>
@@ -432,11 +465,13 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
                 角色 2 (嘉宾) 声线
               </span>
               <select
-                value={speaker2Voice}
-                onChange={(e) => setSpeaker2Voice(e.target.value)}
-                className="w-full bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2 text-xs text-neutral-200 focus:outline-none focus:border-indigo-500"
+                value={speaker2Voice ?? ''}
+                onChange={(e) => setSpeaker2Voice(e.target.value || null)}
+                disabled={catalog.voices.length === 0}
+                className="w-full bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2 text-xs text-neutral-200 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
               >
-                {voiceOptions.map(v => (
+                {catalog.voices.length === 0 && <option value="">（目录未就绪）</option>}
+                {catalog.voices.map(v => (
                   <option key={v.id} value={v.id}>{v.name} ({v.tag} - {v.gender})</option>
                 ))}
               </select>
@@ -504,17 +539,23 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
           </div>
         </div>
 
-        {/* Generate Action Button */}
+        {/* Generate Action Button：目录未就绪/引擎加载中禁止生成（诚实优先，硬性约束 #1/#2） */}
         <div>
           <button
             onClick={handleGenerate}
-            disabled={isGenerating || !(mode === 'single' ? text.trim() : dialogueText.trim())}
+            disabled={isGenerating || !canGenerate}
+            title={!canGenerate ? '等待引擎就绪或输入文本后可生成' : undefined}
             className="w-full py-3.5 rounded-xl font-bold text-sm bg-gradient-to-r from-indigo-600 via-indigo-500 to-cyan-500 hover:from-indigo-500 hover:to-cyan-400 text-white shadow-lg shadow-indigo-950/60 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all active:scale-[0.99]"
           >
             {isGenerating ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin text-white" />
                 <span>AI 正在合成高保真语音...</span>
+              </>
+            ) : qwenLoading ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                <span>Qwen 引擎加载中，就绪后可生成…</span>
               </>
             ) : (
               <>

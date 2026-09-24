@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { AudioItem } from '../types/audio';
 import { getVoiceModelConfig } from '../utils/voiceModelConfig';
+import { useWorkerEngine } from '../hooks/useVoiceCatalog';
 
 interface AudioTranscribeModalProps {
   item: AudioItem;
@@ -26,6 +27,9 @@ export const AudioTranscribeModal: React.FC<AudioTranscribeModalProps> = ({
   onUpdateItem,
 }) => {
   const modelConfig = getVoiceModelConfig();
+  // P01 冷启动：whisper-local 时展示引擎真实状态（自动预热 + 2s 轮询），不伪造就绪
+  const isWhisperLocal = modelConfig.transcribeModel === 'whisper-local';
+  const whisper = useWorkerEngine('whisper_asr', isWhisperLocal);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [transcript, setTranscript] = useState(item.transcript || '');
   const [summary, setSummary] = useState('');
@@ -114,6 +118,42 @@ export const AudioTranscribeModal: React.FC<AudioTranscribeModalProps> = ({
           </button>
         </div>
 
+        {/* Whisper 引擎冷启动状态条（P01）：cold/loading 如实展示并自动预热；不伪造就绪 */}
+        {isWhisperLocal && whisper.state !== 'ready' && (
+          <div className={`flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl border text-xs ${
+            whisper.state === 'error'
+              ? 'bg-rose-950/30 border-rose-500/40 text-rose-200'
+              : 'bg-amber-950/20 border-amber-500/30 text-amber-200'
+          }`}>
+            <div className="flex items-center gap-2 min-w-0">
+              {(whisper.state === 'cold' || whisper.state === 'loading' || whisper.warming) ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />
+              ) : (
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              )}
+              <span className="font-semibold">
+                Whisper 引擎{whisper.state === 'unreachable' ? '不可达' : whisper.state === 'error' ? '加载失败' : '加载中'}：
+              </span>
+              <span className="truncate text-neutral-300" title={whisper.error ?? undefined}>
+                {whisper.state === 'unreachable'
+                  ? '请先启动 worker/「启动Worker.command」（端口 8800）'
+                  : whisper.state === 'error'
+                    ? (whisper.error || '未知错误，请查看 Worker 日志')
+                    : whisper.state === 'cold'
+                      ? '模型未加载，正在触发预热…'
+                      : '首次加载约需 30-90 秒，就绪后即可转录'}
+              </span>
+            </div>
+            <button
+              onClick={() => void whisper.warmup()}
+              disabled={whisper.warming}
+              className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-[11px] font-semibold disabled:opacity-50 shrink-0"
+            >
+              {whisper.warming ? '预热中…' : whisper.state === 'error' ? '重试预热' : '立即预热'}
+            </button>
+          </div>
+        )}
+
         {/* Honest Failure View：真实失败原因 + 重试（硬性约束 #3） */}
         {error && !isTranscribing ? (
           <div className="text-center py-8 space-y-3">
@@ -139,10 +179,12 @@ export const AudioTranscribeModal: React.FC<AudioTranscribeModalProps> = ({
               <Sparkles className="w-6 h-6 animate-pulse" />
             </div>
             <p className="text-sm font-semibold text-neutral-200">
-              使用 Gemini 语音大模型提取音频逐字稿
+              {isWhisperLocal ? '使用本地 Whisper large-v3-turbo 提取音频逐字稿' : '使用 Gemini 语音大模型提取音频逐字稿'}
             </p>
             <p className="text-xs text-neutral-400 max-w-sm mx-auto">
-              自动识别语言文字、检测说话者情绪张力并智能推荐相关检索标签
+              {isWhisperLocal && whisper.state !== 'ready'
+                ? '引擎预热完成前点击转录会等待模型加载（首次约 30-90 秒）'
+                : '自动识别语言文字、检测说话者情绪张力并智能推荐相关检索标签'}
             </p>
             <button
               onClick={handleTranscribe}

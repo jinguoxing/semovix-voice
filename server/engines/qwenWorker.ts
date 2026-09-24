@@ -184,9 +184,10 @@ function workerUrl(): string {
 /**
  * 官方音色目录（带 60s 内存缓存；获取失败时回退上次成功值，可能为 null）。
  * 目录为 null 时调用方不得猜测 speaker——交给 worker 权威校验。
+ * opts.force：引擎刚转为 ready 时绕过 TTL（否则引擎就绪后还要空等最长 60s 才出目录）。
  */
-export async function qwenVoiceCatalog(): Promise<QwenVoiceCatalog | null> {
-  if (catalogCache && Date.now() - catalogCache.fetchedAt < CATALOG_TTL_MS) {
+export async function qwenVoiceCatalog(opts: { force?: boolean } = {}): Promise<QwenVoiceCatalog | null> {
+  if (!opts.force && catalogCache && Date.now() - catalogCache.fetchedAt < CATALOG_TTL_MS) {
     return { speakers: catalogCache.speakers, languages: catalogCache.languages };
   }
   try {
