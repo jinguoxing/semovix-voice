@@ -79,7 +79,7 @@ describe('POST /api/generate-speech (validation only, no engine calls)', () => {
     expect(res.body.audioUrl).toBeUndefined(); // 硬性约束 #4：未知 ID 不得默认发给 Gemini
   });
 
-  it('returns 503 engine_unavailable when the local engine is down (pre-check, no fabricated audio)', async () => {
+  it('returns 503 engine_unavailable when the worker process is down (honest failure, no fabricated audio)', async () => {
     const res = await request(app)
       .post('/api/generate-speech')
       .send({ text: '你好', ttsModel: 'qwen3-tts-local' })
@@ -134,8 +134,8 @@ describe('POST /api/transcribe-audio (honest failure, no simulated transcripts)'
 });
 
 describe('GET /api/generations (traceability ledger, migration 0002)', () => {
-  it('records a failed engine call (health OK, synth 500) with real error and no output file', async () => {
-    // 受控桩：/health 与 /voices 可用（通过 503 预检），/tts/qwen 返回 500 → 真实调用失败留痕
+  it('records a failed engine call (engine ready, synth 500) with real error and no output file', async () => {
+    // 受控桩：/health 就绪（state=ready）、/voices 可用，/tts/qwen 返回 500 → 真实调用失败留痕
     const originalFetch = globalThis.fetch;
     vi.stubGlobal('fetch', vi.fn(async (input: any) => {
       const url = String(input);
@@ -143,8 +143,8 @@ describe('GET /api/generations (traceability ledger, migration 0002)', () => {
         return new Response(JSON.stringify({
           ok: true,
           engines: {
-            qwen_tts: { available: true, loading: false, error: null, checkpoint: 'test-ckpt' },
-            whisper_asr: { available: true, loading: false, error: null, model: 'whisper-test' },
+            qwen_tts: { state: 'ready', available: true, error: null, checkpoint: 'test-ckpt' },
+            whisper_asr: { state: 'ready', available: true, error: null, model: 'whisper-test' },
           },
         }), { status: 200 });
       }

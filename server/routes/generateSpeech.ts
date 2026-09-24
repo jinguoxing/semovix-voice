@@ -8,6 +8,7 @@ import { Router } from 'express';
 import { resolveTtsAdapter } from '../engines/tts';
 import { hasGeminiApiKey } from '../engines/geminiClient';
 import { EngineValidationError, describeError } from '../engines/errors';
+import { WorkerNotReadyError } from '../engines/qwenWorker';
 import { fail } from './respond';
 import { recordGeneration, writeArtifactFile } from '../db/generationsStore';
 
@@ -57,17 +58,8 @@ generateSpeechRouter.post('/generate-speech', async (req, res) => {
       return fail(res, 400, 'Gemini API key is not configured.', 'engine_not_configured', { engine: adapter.id });
     }
 
-    // 引擎可用性预检（P01）：Worker 未启动/引擎未加载 → 明确 503，与“调用失败 502”区分
-    if (!(await adapter.isAvailable())) {
-      return fail(
-        res,
-        503,
-        `语音引擎 ${adapter.id} 当前不可用（如本地 Qwen3-TTS 需先启动 worker/「启动Worker.command」并等待模型加载）。`,
-        'engine_unavailable',
-        { engine: adapter.id }
-      );
-    }
-
+    // P01 冷启动状态机：不再做 isAvailable() 预检（cold 状态会被直接 503、模型永远没机会加载）。
+    // 引擎等待逻辑在 adapter.synthesize 内：cold/loading → 触发 warmup 并轮询；失败/超时抛 WorkerNotReadyError。
     const genId = generationId();
     const inputText = String(text).slice(0, 2000);
 
@@ -88,6 +80,11 @@ generateSpeechRouter.post('/generate-speech', async (req, res) => {
       if (e instanceof EngineValidationError) {
         // 引擎侧业务校验失败（如非官方 Qwen speaker ID，硬性约束 #6）——客户端错误，不留引擎失败痕
         return fail(res, 400, e.message, e.code, e.details);
+      }
+      if (e instanceof WorkerNotReadyError) {
+        // 冷启动/加载失败/等待超时：如实 503（引擎尚未被真正调用，不留引擎失败痕）
+        const { engine: workerEngine, ...details } = e.details;
+        return fail(res, 503, e.message, e.code, { engine: adapter.id, ...(workerEngine ? { workerEngine } : {}), ...details });
       }
       // 引擎调用失败：如实上报 502 + 留痕，不降级、不伪造音频（硬性约束 #1/#2）
       console.error(`TTS engine ${adapter.id} failed:`, e);

@@ -1,20 +1,173 @@
 /**
  * Python FastAPI Worker 客户端（硬性约束 #14）
  *
- * Node 后端经此模块与 worker/ 通信：Qwen3-TTS 合成、Whisper 转录、官方音色目录。
+ * Node 后端经此模块与 worker/ 通信：Qwen3-TTS 合成、Whisper 转录、官方音色目录、
+ * 引擎冷启动状态机（cold → loading → ready | error，P01）。
  * 音频传输全部走字节流/文件（TTS 响应为 WAV 字节、ASR 请求为 multipart），不走 JSON Base64（硬性约束 #7）。
  * Qwen speaker 必须是模型运行时返回的官方精确 ID（如 uncle_fu），目录以外一律拒绝（硬性约束 #6）。
  */
 import { getConfig } from '../config';
 import { EngineValidationError } from './errors';
 
-export interface WorkerHealth {
-  ok: boolean;
-  engines: {
-    qwen_tts: { available: boolean; loading: boolean; error: string | null; checkpoint: string };
-    whisper_asr: { available: boolean; loading: boolean; error: string | null; model: string };
-  };
+/* ---------------- 冷启动状态机（P01） ---------------- */
+
+export type WorkerEngineId = 'qwen_tts' | 'whisper_asr';
+export type WorkerEngineState = 'cold' | 'loading' | 'ready' | 'error';
+
+export interface WorkerEngineSnapshot {
+  state: WorkerEngineState;
+  available: boolean; // ≡ state === 'ready'
+  error: string | null;
 }
+
+export interface WorkerStatus {
+  reachable: boolean;
+  qwen_tts: WorkerEngineSnapshot;
+  whisper_asr: WorkerEngineSnapshot;
+}
+
+function unreachable(): WorkerStatus {
+  const cold: WorkerEngineSnapshot = { state: 'cold', available: false, error: null };
+  return { reachable: false, qwen_tts: { ...cold }, whisper_asr: { ...cold } };
+}
+
+/** 兼容旧 Worker 健康载荷（无 state 字段时按 available 推断），升级窗口期内不至于误判 */
+function normalizeEngineState(state: unknown, available: unknown): WorkerEngineState {
+  if (state === 'cold' || state === 'loading' || state === 'ready' || state === 'error') return state;
+  return available === true ? 'ready' : 'cold';
+}
+
+/**
+ * Worker 状态查询（GET /health，永不触发加载）。
+ * 进程不可达 → { reachable: false }；状态与真实错误如实透传。
+ */
+export async function getWorkerStatus(): Promise<WorkerStatus> {
+  try {
+    const res = await fetch(`${workerUrl()}/health`, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return unreachable();
+    const data = (await res.json()) as {
+      engines?: Record<WorkerEngineId, { state?: string; available?: boolean; error?: string | null }>;
+    };
+    const snap = (id: WorkerEngineId): WorkerEngineSnapshot => {
+      const raw = data.engines?.[id];
+      const state = normalizeEngineState(raw?.state, raw?.available);
+      return { state, available: state === 'ready', error: raw?.error ?? null };
+    };
+    return { reachable: true, qwen_tts: snap('qwen_tts'), whisper_asr: snap('whisper_asr') };
+  } catch {
+    return unreachable();
+  }
+}
+
+export interface WarmupResult {
+  state: WorkerEngineState;
+  error: string | null;
+}
+
+/** Worker 预热路由段（引擎 ID ≠ 路由名：qwen_tts → /warmup/qwen，whisper_asr → /warmup/whisper） */
+const WARMUP_PATH: Record<WorkerEngineId, string> = { qwen_tts: 'qwen', whisper_asr: 'whisper' };
+
+/**
+ * 显式预热（POST /warmup/{qwen|whisper}）：cold → 触发加载；loading → 幂等；
+ * ready → 200；error → Worker 返回 503 + retry 并已自动重启加载。
+ * 网络失败/意外状态码时抛错，由调用方如实上报。
+ */
+export async function warmupWorkerEngine(engine: WorkerEngineId): Promise<WarmupResult> {
+  const res = await fetch(`${workerUrl()}/warmup/${WARMUP_PATH[engine]}`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(5000),
+  });
+  let body: { state?: string; error?: string | null } = {};
+  try {
+    body = (await res.json()) as { state?: string; error?: string | null };
+  } catch {
+    /* 空 body：按状态码推断 */
+  }
+  if (res.status === 200) return { state: 'ready', error: body.error ?? null };
+  if (res.status === 202 || res.status === 503) {
+    return { state: body.state === 'error' ? 'error' : 'loading', error: body.error ?? null };
+  }
+  throw new Error(`Worker 预热 ${engine} 失败 (HTTP ${res.status})`);
+}
+
+/** 可用性/预热等待失败：路由层统一映射为 503（engine_unavailable / engine_warmup_timeout） */
+export class WorkerNotReadyError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'engine_unavailable' | 'engine_warmup_timeout',
+    readonly details: Record<string, unknown> = {}
+  ) {
+    super(message);
+    this.name = 'WorkerNotReadyError';
+  }
+}
+
+export interface WaitReadyOptions {
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * 等待引擎就绪（P01 冷启动状态机的核心）：
+ * - Worker 不可达 → 立即 engine_unavailable（真实原因）
+ * - state=error    → 立即 engine_unavailable（带 Worker 上报的真实加载错误）
+ * - cold           → 触发 warmup 后轮询
+ * - loading        → 轮询直到 ready
+ * - 超时           → engine_warmup_timeout（附最后状态与错误）
+ * 禁止在 cold 状态直接返回 503——模型必须有机会加载。
+ */
+export async function waitForWorkerEngineReady(
+  engine: WorkerEngineId,
+  opts: WaitReadyOptions = {}
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 240_000;
+  const pollIntervalMs = opts.pollIntervalMs ?? 2_000;
+  const deadline = Date.now() + timeoutMs;
+  let lastState: WorkerEngineState = 'cold';
+  let lastError: string | null = null;
+
+  while (Date.now() < deadline) {
+    const status = await getWorkerStatus();
+    if (!status.reachable) {
+      throw new WorkerNotReadyError(
+        `本地 Worker 进程不可达（${workerUrl()}）：请先启动 worker/「启动Worker.command」（端口 8800），启动后重试。`,
+        'engine_unavailable',
+        { engine }
+      );
+    }
+    const snap = status[engine];
+    lastState = snap.state;
+    lastError = snap.error;
+    if (snap.state === 'ready') return;
+    if (snap.state === 'error') {
+      throw new WorkerNotReadyError(
+        `引擎 ${engine} 加载失败：${snap.error ?? '未知错误'}。请查看 Worker 日志（模型路径/依赖/内存），修复后重新预热。`,
+        'engine_unavailable',
+        { engine, workerState: 'error', workerError: snap.error }
+      );
+    }
+    if (snap.state === 'cold') {
+      // 每轮都触发（服务端幂等）：避免一次网络抖动导致永远停在 cold
+      try {
+        await warmupWorkerEngine(engine);
+      } catch {
+        /* 预热请求失败：下一轮轮询兜底 */
+      }
+    }
+    await sleep(pollIntervalMs);
+  }
+  throw new WorkerNotReadyError(
+    `等待引擎 ${engine} 就绪超时（${Math.round(timeoutMs / 1000)}s，最后状态 ${lastState}${lastError ? `：${lastError}` : ''}）。大模型首次加载较慢属正常现象，请稍后重试或先手动预热。`,
+    'engine_warmup_timeout',
+    { engine, lastState, lastError }
+  );
+}
+
+/* ---------------- 音色目录 ---------------- */
 
 export interface QwenVoiceCatalog {
   speakers: string[]; // 官方精确 ID（下划线式）
@@ -26,17 +179,6 @@ let catalogCache: (QwenVoiceCatalog & { fetchedAt: number }) | null = null;
 
 function workerUrl(): string {
   return getConfig().workerUrl;
-}
-
-/** Worker 健康状态；进程不可达时返回 null（不抛错，调用方据此如实上报 unavailable） */
-export async function workerHealth(): Promise<WorkerHealth | null> {
-  try {
-    const res = await fetch(`${workerUrl()}/health`, { signal: AbortSignal.timeout(3000) });
-    if (!res.ok) return null;
-    return (await res.json()) as WorkerHealth;
-  } catch {
-    return null;
-  }
 }
 
 /**

@@ -10,7 +10,7 @@ import { pcmToWavBuffer, wavDuration, concatWavBuffers, parseWav } from '../audi
 import { applySpeedToWav } from '../audio/wsola';
 import { getGeminiClient, hasGeminiApiKey } from './geminiClient';
 import { EngineValidationError } from './errors';
-import { workerHealth, qwenVoiceCatalog, qwenWorkerSynthesize, resolveQwenSpeaker } from './qwenWorker';
+import { getWorkerStatus, qwenVoiceCatalog, qwenWorkerSynthesize, resolveQwenSpeaker, waitForWorkerEngineReady } from './qwenWorker';
 
 export interface TTSSynthesizeRequest {
   text: string;
@@ -150,11 +150,16 @@ export const qwenLocalAdapter: TTSEngineAdapter = {
   id: 'qwen3-tts-local',
   label: 'Qwen3-TTS 1.7B (Worker)',
   requiresApiKey: false,
+  // 仅供状态面板使用（ready 才算可用）；调用链路不走此预检——cold 也有机会加载（P01）
   isAvailable: async () => {
-    const health = await workerHealth();
-    return health?.engines.qwen_tts.available ?? false;
+    const status = await getWorkerStatus();
+    return status.reachable && status.qwen_tts.state === 'ready';
   },
   async synthesize(req) {
+    // P01 冷启动状态机：先等模型就绪（cold/loading → 触发 warmup 并轮询），
+    // 不再因“尚未加载”直接失败；加载失败/超时抛 WorkerNotReadyError → 路由 503
+    await waitForWorkerEngineReady('qwen_tts');
+
     // 硬性约束 #5/#6：不做任何 persona→speaker 映射；
     // speaker 必须是 worker 官方目录中的精确 ID（如 uncle_fu），Google Voice ID 一律拒绝
     const catalog = await qwenVoiceCatalog();

@@ -13,6 +13,7 @@ import {
 } from '../engines/asr';
 import { ollamaIsAvailable, ollamaGenerateJson } from '../engines/reasoning';
 import { getGeminiClient, hasGeminiApiKey } from '../engines/geminiClient';
+import { WorkerNotReadyError } from '../engines/qwenWorker';
 import { fail } from './respond';
 import { describeError } from '../engines/errors';
 import { recordGeneration } from '../db/generationsStore';
@@ -102,6 +103,11 @@ transcribeRouter.post('/transcribe-audio', upload.single('audio'), async (req, r
 
         return res.json({ success: true, transcript, summary, mood, tags, duration, engine: 'whisper-local', generationId: genId });
       } catch (e: any) {
+        if (e instanceof WorkerNotReadyError) {
+          // 冷启动/加载失败/等待超时：如实 503（引擎尚未被真正调用，不留引擎失败痕，P01）
+          const { engine: workerEngine, ...details } = e.details;
+          return fail(res, 503, e.message, e.code, { engine: 'whisper-local', ...(workerEngine ? { workerEngine } : {}), ...details });
+        }
         console.warn('Whisper transcribe failed:', e);
         const described = describeError(e);
         recordGeneration({

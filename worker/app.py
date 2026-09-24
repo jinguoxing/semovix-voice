@@ -3,14 +3,21 @@
 Semovix Voice Studio - Python FastAPI Worker（硬性约束 #14）
 
 独立进程承载两个本地引擎，Node 后端只与本 Worker 通信：
-  - Qwen3-TTS (Qwen3-TTS-12Hz-1.7B-CustomVoice, MPS)
-  - Whisper   (openai/whisper-large-v3-turbo, MPS)
+  - Qwen3-TTS (Qwen3-TTS-12Hz-1.7B-CustomVoice)
+  - Whisper   (openai/whisper-large-v3-turbo)
 
-端点：
-  GET  /health          引擎就绪状态（不触发模型加载）
-  GET  /voices          Qwen 官方 speaker 精确 ID（模型运行时 get_supported_speakers()，硬性约束 #6）
-  POST /tts/qwen        {"text","speaker","language"?,"instruct"?} → audio/wav 字节（非 Base64，硬性约束 #7）
-  POST /asr/whisper     multipart 文件上传 → {"transcript","language","duration"}
+引擎冷启动状态机（P01）：
+
+    cold ──warmup──▶ loading ──成功──▶ ready
+                        │
+                        └──失败──▶ error ──再次 warmup──▶ loading（自动重试）
+
+  - GET  /health          永不触发加载；进程可达即 200，如实上报各引擎 state
+  - POST /warmup/qwen     ready → 200；cold/loading → 202 {retry:true}；error → 503 {retry:true}（同时触发重载）
+  - POST /warmup/whisper  同上
+  - GET  /voices          不触发加载；未就绪 → 503 engine_not_ready
+  - POST /tts/qwen        不触发加载；未就绪 → 503 engine_not_ready
+  - POST /asr/whisper     不触发加载；未就绪 → 503 engine_not_ready
 
 音频传输一律文件/字节流，不走 JSON Base64（硬性约束 #7）。
 """
@@ -18,8 +25,11 @@ from __future__ import annotations
 
 import io
 import os
+import threading
 import wave
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
@@ -30,14 +40,40 @@ DEFAULT_TTS_CKPT = "/Volumes/King的扩展盘/qwen LLM/Qwen3-TTS/models/Qwen3-TT
 TTS_CKPT = os.environ.get("SEMOVIX_TTS_CKPT", DEFAULT_TTS_CKPT)
 ASR_MODEL_ID = os.environ.get("SEMOVIX_ASR_MODEL", "openai/whisper-large-v3-turbo")
 
-app = FastAPI(title="Semovix Voice Worker", version="1.0.0")
+app = FastAPI(title="Semovix Voice Worker", version="1.1.0")
+
 
 # ---------------------------------------------------------------------------
-# 引擎状态（懒加载；_load_* 失败不崩溃进程，端点如实返回 503）
+# 引擎状态机：cold → loading → ready | error（线程安全，加载在后台线程执行）
 # ---------------------------------------------------------------------------
 
-_tts_state: dict[str, Any] = {"loaded": False, "error": None, "model": None, "speakers": [], "languages": []}
-_asr_state: dict[str, Any] = {"loaded": False, "error": None, "processor": None, "model": None, "device": None, "dtype": None}
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class EngineState:
+    id: str
+    state: str = "cold"  # cold | loading | ready | error
+    error: Optional[str] = None
+    load_started_at: Optional[str] = None
+    loaded_at: Optional[str] = None
+    load_attempts: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # 以下载荷仅在 state == "ready" 时有效
+    model: Any = None
+    processor: Any = None
+    speakers: list = field(default_factory=list)
+    languages: list = field(default_factory=list)
+    device: Optional[str] = None
+    dtype: Any = None
+    checkpoint: Optional[str] = None
+
+
+_TTS = EngineState(id="qwen_tts")
+_ASR = EngineState(id="whisper_asr")
+_ENGINES: dict[str, EngineState] = {"qwen_tts": _TTS, "whisper_asr": _ASR}
 
 
 def _pick_device() -> str:
@@ -50,52 +86,103 @@ def _pick_device() -> str:
     return "cpu"
 
 
-def _load_tts():
-    if _tts_state["loaded"] or _tts_state.get("loading"):
-        return
-    _tts_state["loading"] = True
-    try:
-        import torch
-        from qwen_tts import Qwen3TTSModel
+def _build_tts() -> dict[str, Any]:
+    """真实加载 Qwen3-TTS（测试通过替换 _BUILDERS 注入伪模型）"""
+    import torch
+    from qwen_tts import Qwen3TTSModel
 
-        device = _pick_device()
-        # 与既有 qwen-tts-demo 运行参数一致：MPS + bf16 + 不用 flash-attn
-        dtype = torch.bfloat16 if device == "mps" else torch.float32
-        tts = Qwen3TTSModel.from_pretrained(TTS_CKPT, device_map=device, dtype=dtype, attn_implementation=None)
-        speakers: list[str] = list(tts.get_supported_speakers() or [])
-        languages: list[str] = list(tts.get_supported_languages() or [])
-        _tts_state.update(loaded=True, model=tts, speakers=speakers, languages=languages, device=device, checkpoint=TTS_CKPT)
-        print(f"[worker] Qwen3-TTS 就绪 device={device} speakers={speakers}")
+    device = _pick_device()
+    # 与既有 qwen-tts-demo 运行参数一致：MPS + bf16 + 不用 flash-attn
+    dtype = torch.bfloat16 if device == "mps" else torch.float32
+    tts = Qwen3TTSModel.from_pretrained(TTS_CKPT, device_map=device, dtype=dtype, attn_implementation=None)
+    return {
+        "model": tts,
+        "speakers": list(tts.get_supported_speakers() or []),
+        "languages": list(tts.get_supported_languages() or []),
+        "device": device,
+        "checkpoint": TTS_CKPT,
+    }
+
+
+def _build_asr() -> dict[str, Any]:
+    """真实加载 Whisper（测试通过替换 _BUILDERS 注入伪模型）"""
+    import torch
+    from transformers import WhisperForConditionalGeneration, WhisperProcessor
+
+    device = _pick_device()
+    dtype = torch.float16 if device == "mps" else torch.float32
+    processor = WhisperProcessor.from_pretrained(ASR_MODEL_ID)
+    model = WhisperForConditionalGeneration.from_pretrained(ASR_MODEL_ID, torch_dtype=dtype).to(device)
+    return {"model": model, "processor": processor, "device": device, "dtype": dtype}
+
+
+_BUILDERS: dict[str, Callable[[], dict[str, Any]]] = {"qwen_tts": _build_tts, "whisper_asr": _build_asr}
+
+
+def _load_engine(es: EngineState) -> None:
+    """后台线程中执行真实加载；任何异常 → state=error（带真实原因），进程不崩溃。"""
+    try:
+        payload = _BUILDERS[es.id]()
     except Exception as e:  # noqa: BLE001 - 状态如实上报，不崩溃
-        _tts_state["error"] = f"{type(e).__name__}: {e}"
-        print(f"[worker] Qwen3-TTS 加载失败: {_tts_state['error']}")
-    finally:
-        _tts_state["loading"] = False
-
-
-def _load_asr():
-    if _asr_state["loaded"] or _asr_state.get("loading"):
+        es.error = f"{type(e).__name__}: {e}"
+        es.state = "error"
+        print(f"[worker] {es.id} 加载失败（第 {es.load_attempts} 次）: {es.error}", flush=True)
         return
-    _asr_state["loading"] = True
-    try:
-        import torch
-        from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
-        device = _pick_device()
-        dtype = torch.float16 if device == "mps" else torch.float32
-        processor = WhisperProcessor.from_pretrained(ASR_MODEL_ID)
-        model = WhisperForConditionalGeneration.from_pretrained(ASR_MODEL_ID, torch_dtype=dtype).to(device)
-        _asr_state.update(loaded=True, processor=processor, model=model, device=device, dtype=dtype)
-        print(f"[worker] Whisper 就绪 device={device} model={ASR_MODEL_ID}")
-    except Exception as e:  # noqa: BLE001
-        _asr_state["error"] = f"{type(e).__name__}: {e}"
-        print(f"[worker] Whisper 加载失败: {_asr_state['error']}")
-    finally:
-        _asr_state["loading"] = False
+    # 先写载荷再置 ready，保证读到 ready 时载荷一定完整
+    es.model = payload.get("model")
+    es.processor = payload.get("processor")
+    es.speakers = payload.get("speakers", [])
+    es.languages = payload.get("languages", [])
+    es.device = payload.get("device")
+    es.dtype = payload.get("dtype")
+    es.checkpoint = payload.get("checkpoint")
+    es.error = None
+    es.loaded_at = _now_iso()
+    es.state = "ready"
+    print(f"[worker] {es.id} 就绪 device={es.device}", flush=True)
 
 
-def _engine_unavailable(engine: str, detail: str) -> HTTPException:
-    return HTTPException(status_code=503, detail={"error": detail, "code": "engine_unavailable", "engine": engine})
+def _request_load(es: EngineState) -> None:
+    """cold/error → 启动后台加载线程；loading/ready → 不重复加载（幂等）。"""
+    with es.lock:
+        if es.state in ("loading", "ready"):
+            return
+        es.state = "loading"
+        es.error = None
+        es.load_attempts += 1
+        es.load_started_at = _now_iso()
+        threading.Thread(target=_load_engine, args=(es,), daemon=True, name=f"load-{es.id}").start()
+
+
+def _snapshot(es: EngineState) -> dict[str, Any]:
+    return {
+        "state": es.state,
+        "available": es.state == "ready",
+        "error": es.error,
+        "loadStartedAt": es.load_started_at,
+        "loadedAt": es.loaded_at,
+        "loadAttempts": es.load_attempts,
+    }
+
+
+_WARMUP_PATH = {"qwen_tts": "qwen", "whisper_asr": "whisper"}
+
+
+def _require_ready(es: EngineState) -> None:
+    """推理端点守卫：未就绪一律 503 engine_not_ready（绝不内联加载，避免请求线程被模型加载卡死）"""
+    if es.state != "ready":
+        hint = es.error or f"模型尚未加载，请先 POST /warmup/{_WARMUP_PATH[es.id]} 并轮询 /health 至 ready"
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": f"{es.id} 引擎未就绪（state={es.state}）：{hint}",
+                "code": "engine_not_ready",
+                "engine": es.id,
+                "state": es.state,
+                "retry": es.state in ("cold", "loading"),
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -133,11 +220,9 @@ def _float_to_wav_bytes(wav: Any, sample_rate: int) -> bytes:
 
 @app.post("/tts/qwen")
 def tts_qwen(req: TtsRequest) -> Response:
-    _load_tts()
-    if not _tts_state["loaded"]:
-        raise _engine_unavailable("qwen_tts", f"Qwen3-TTS 引擎不可用：{_tts_state['error'] or '模型未加载完成'}")
+    _require_ready(_TTS)
 
-    speakers = _tts_state["speakers"]
+    speakers = _TTS.speakers
     # 硬性约束 #6：speaker 必须是官方精确 ID，不接受展示名/别名
     if speakers and req.speaker not in speakers:
         raise HTTPException(
@@ -149,19 +234,19 @@ def tts_qwen(req: TtsRequest) -> Response:
                 "speakers": speakers,
             },
         )
-    if req.language not in (_tts_state["languages"] or []) and req.language != "Auto":
+    if req.language not in (_TTS.languages or []) and req.language != "Auto":
         raise HTTPException(
             status_code=400,
             detail={
                 "error": f"不支持的语言: {req.language}",
                 "code": "unsupported_language",
                 "engine": "qwen_tts",
-                "languages": _tts_state["languages"],
+                "languages": _TTS.languages,
             },
         )
 
     try:
-        wavs, sr = _tts_state["model"].generate_custom_voice(
+        wavs, sr = _TTS.model.generate_custom_voice(
             text=req.text.strip(),
             language=req.language,
             speaker=req.speaker,
@@ -184,9 +269,7 @@ def tts_qwen(req: TtsRequest) -> Response:
 
 @app.post("/asr/whisper")
 async def asr_whisper(file: UploadFile, language: str = Form("auto")) -> JSONResponse:
-    _load_asr()
-    if not _asr_state["loaded"]:
-        raise _engine_unavailable("whisper_asr", f"Whisper 引擎不可用：{_asr_state['error'] or '模型未加载完成'}")
+    _require_ready(_ASR)
 
     if language not in ("auto", "zh", "en"):
         raise HTTPException(status_code=400, detail={"error": f"不支持的语言: {language}", "code": "unsupported_language", "engine": "whisper_asr"})
@@ -202,8 +285,8 @@ async def asr_whisper(file: UploadFile, language: str = Form("auto")) -> JSONRes
         speech, _ = librosa.load(io.BytesIO(audio_bytes), sr=16000, mono=True)
         duration = len(speech) / 16000.0
 
-        processor, model = _asr_state["processor"], _asr_state["model"]
-        device, dtype = _asr_state["device"], _asr_state["dtype"]
+        processor, model = _ASR.processor, _ASR.model
+        device, dtype = _ASR.device, _ASR.dtype
         inputs = processor(speech, sampling_rate=16000, return_tensors="pt")
         input_features = inputs.input_features.to(device, dtype)
 
@@ -225,41 +308,61 @@ async def asr_whisper(file: UploadFile, language: str = Form("auto")) -> JSONRes
 
 
 # ---------------------------------------------------------------------------
-# 目录与健康
+# 目录 / 健康 / 预热
 # ---------------------------------------------------------------------------
 
 
 @app.get("/voices")
 def voices() -> JSONResponse:
-    _load_tts()
-    if not _tts_state["loaded"]:
-        raise _engine_unavailable("qwen_tts", f"Qwen3-TTS 引擎不可用：{_tts_state['error'] or '模型未加载完成'}")
+    # 不触发加载：未就绪如实 503（目录只有模型运行时才权威，硬性约束 #6）
+    _require_ready(_TTS)
     return JSONResponse(
         {
-            "checkpoint": _tts_state.get("checkpoint"),
-            "speakers": _tts_state["speakers"],  # 官方精确 ID（下划线式，如 Uncle_Fu）
-            "languages": _tts_state["languages"],
+            "checkpoint": _TTS.checkpoint,
+            "speakers": _TTS.speakers,  # 官方精确 ID（下划线式，如 uncle_fu）
+            "languages": _TTS.languages,
         }
     )
 
 
 @app.get("/health")
 def health() -> JSONResponse:
-    # health 不触发加载：如实报告当前状态（未加载 ≠ 不可用，但 available 只有加载成功才为 true）
+    # 永不触发加载：进程可达即 200，如实上报各引擎状态（available ≡ state == 'ready'）
     return JSONResponse(
         {
             "ok": True,
             "engines": {
-                "qwen_tts": {"available": _tts_state["loaded"], "loading": bool(_tts_state.get("loading")), "error": _tts_state["error"], "checkpoint": TTS_CKPT},
-                "whisper_asr": {"available": _asr_state["loaded"], "loading": bool(_asr_state.get("loading")), "error": _asr_state["error"], "model": ASR_MODEL_ID, "dtype": str(_asr_state["dtype"]) if _asr_state["dtype"] else None},
+                "qwen_tts": {**_snapshot(_TTS), "checkpoint": _TTS.checkpoint or TTS_CKPT},
+                "whisper_asr": {**_snapshot(_ASR), "model": ASR_MODEL_ID},
             },
         }
     )
 
 
-@app.get("/warmup")
-def warmup() -> JSONResponse:
-    """显式预加载（首次合成前调用可避免请求超时）"""
-    _load_tts()
-    _load_asr()
-    return health()
+def _warmup_response(es: EngineState) -> JSONResponse:
+    with es.lock:
+        state_before = es.state
+        last_error = es.error
+
+    if state_before == "ready":
+        return JSONResponse({"engine": es.id, "state": "ready", "retry": False})
+
+    _request_load(es)  # cold → 启动加载；loading → 幂等 no-op；error → 触发重载
+
+    if state_before == "error":
+        # 上一次加载失败：503 + retry=true（后台已重新开始加载，客户端稍后重试/轮询）
+        return JSONResponse(
+            status_code=503,
+            content={"engine": es.id, "state": "loading", "error": last_error, "retry": True},
+        )
+    return JSONResponse(status_code=202, content={"engine": es.id, "state": "loading", "retry": True})
+
+
+@app.post("/warmup/qwen")
+def warmup_qwen() -> JSONResponse:
+    return _warmup_response(_TTS)
+
+
+@app.post("/warmup/whisper")
+def warmup_whisper() -> JSONResponse:
+    return _warmup_response(_ASR)
