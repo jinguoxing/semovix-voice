@@ -22,6 +22,9 @@ import { VoiceIdentitiesView } from './components/VoiceIdentitiesView';
 import { VoiceIdentityCreateView, type VoiceSource } from './components/VoiceIdentityCreateView';
 import { VoiceIdentityWorkbenchEntry } from './components/VoiceIdentityWorkbenchEntry';
 import { VoiceIdentityDesignView } from './components/VoiceIdentityDesignView';
+import { VoiceIdentityHumanCloneView } from './components/VoiceIdentityHumanCloneView';
+import { VoiceIdentityReviewView } from './components/VoiceIdentityReviewView';
+import { VoiceIdentityValidationView } from './components/VoiceIdentityValidationView';
 
 import { AudioItem, AudioFolder } from './types/audio';
 import { 
@@ -49,9 +52,23 @@ function currentVoiceSourceRoute(): { id: string; source: VoiceSource } | null {
     const drafts = JSON.parse(window.localStorage.getItem('voice-studio-identity-drafts') || '[]') as { id: string; source: VoiceSource }[];
     const saved = drafts.find(item => item.id === id)?.source;
     const selected = window.sessionStorage.getItem(`voice-studio-source-identity:${id}`) as VoiceSource | null;
-    const source = String(saved || selected || 'AI 原创设计');
+    // Built-in identities provide demonstration source data when a user opens a
+    // deep link before selecting a source in this browser session.
+    const demoSource = id === 'xiaofei' ? '授权真人克隆' : 'AI 原创设计';
+    const source = String(saved || selected || demoSource);
     return { id, source: source === '预置音色' ? 'Provider 预置音色' : source as VoiceSource };
   } catch { return { id, source: 'AI 原创设计' }; }
+}
+
+function currentVoiceReviewRoute(): { id: string; batchId: string } | null {
+  const match = window.location.pathname.match(/^\/voice-identities\/([^/]+)\/review$/);
+  if (!match) return null;
+  return { id: decodeURIComponent(match[1]), batchId: new URLSearchParams(window.location.search).get('batchId') || '20260924-01' };
+}
+
+function currentVoiceValidationRoute(): string | null {
+  const match = window.location.pathname.match(/^\/voice-identities\/([^/]+)\/validation$/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 export default function App() {
@@ -61,6 +78,8 @@ export default function App() {
   const [voiceCreateOpen, setVoiceCreateOpen] = useState(() => window.location.pathname === '/voice-identities/new');
   const [voiceWorkbenchId, setVoiceWorkbenchId] = useState<string | null>(() => { const route = currentVoiceSourceRoute(); return route && route.source !== 'AI 原创设计' ? route.id : null; });
   const [voiceDesignId, setVoiceDesignId] = useState<string | null>(() => { const route = currentVoiceSourceRoute(); return route?.source === 'AI 原创设计' ? route.id : null; });
+  const [voiceReview, setVoiceReview] = useState<{ id: string; batchId: string } | null>(() => currentVoiceReviewRoute());
+  const [voiceValidationId, setVoiceValidationId] = useState<string | null>(() => currentVoiceValidationRoute());
   const [searchQuery, setSearchQuery] = useState('');
   const [voiceIdentityCount, setVoiceIdentityCount] = useState(8);
 
@@ -69,6 +88,8 @@ export default function App() {
       setCurrentTab(window.location.pathname.startsWith('/voice-identities') ? 'voice-identities' : 'library');
       setVoiceCreateOpen(window.location.pathname === '/voice-identities/new');
       const route = currentVoiceSourceRoute();
+      setVoiceReview(currentVoiceReviewRoute());
+      setVoiceValidationId(currentVoiceValidationRoute());
       setVoiceWorkbenchId(route && route.source !== 'AI 原创设计' ? route.id : null);
       setVoiceDesignId(route?.source === 'AI 原创设计' ? route.id : null);
     };
@@ -81,6 +102,8 @@ export default function App() {
     setVoiceCreateOpen(false);
     setVoiceWorkbenchId(null);
     setVoiceDesignId(null);
+    setVoiceReview(null);
+    setVoiceValidationId(null);
     setSearchQuery('');
     const path = tab === 'voice-identities' ? '/voice-identities' : '/';
     if (window.location.pathname !== path) window.history.pushState({}, '', path);
@@ -91,6 +114,8 @@ export default function App() {
     setVoiceCreateOpen(true);
     setVoiceWorkbenchId(null);
     setVoiceDesignId(null);
+    setVoiceReview(null);
+    setVoiceValidationId(null);
     setSearchQuery('');
     window.history.pushState({}, '', '/voice-identities/new');
   };
@@ -100,6 +125,8 @@ export default function App() {
     setVoiceCreateOpen(false);
     setVoiceWorkbenchId(null);
     setVoiceDesignId(null);
+    setVoiceReview(null);
+    setVoiceValidationId(null);
     setSearchQuery('');
     window.history.pushState({}, '', '/voice-identities');
   };
@@ -111,6 +138,8 @@ export default function App() {
     const isDesign = source === 'AI 原创设计';
     setVoiceWorkbenchId(isDesign ? null : id);
     setVoiceDesignId(isDesign ? id : null);
+    setVoiceReview(null);
+    setVoiceValidationId(null);
     window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}?section=source`);
   };
 
@@ -122,6 +151,8 @@ export default function App() {
     setVoiceCreateOpen(false);
     setVoiceWorkbenchId(null);
     setVoiceDesignId(id);
+    setVoiceReview(null);
+    setVoiceValidationId(null);
     window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}?section=source`);
   };
 
@@ -129,7 +160,19 @@ export default function App() {
     setVoiceCreateOpen(true);
     setVoiceWorkbenchId(null);
     setVoiceDesignId(null);
+    setVoiceReview(null);
+    setVoiceValidationId(null);
     window.history.pushState({}, '', `/voice-identities/new?draft=${encodeURIComponent(id)}`);
+  };
+
+  const returnToVoiceSource = (id: string) => {
+    setCurrentTab('voice-identities');
+    setVoiceCreateOpen(false);
+    setVoiceWorkbenchId(null);
+    setVoiceReview(null);
+    setVoiceValidationId(null);
+    setVoiceDesignId(id);
+    window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}?section=source`);
   };
 
   // Filters
@@ -382,7 +425,7 @@ export default function App() {
         totalDurationSeconds={totalDurationSeconds}
         voiceIdentityCount={voiceIdentityCount}
         isCreatingVoiceIdentity={voiceCreateOpen}
-        voiceModuleHint={voiceDesignId ? '声音来源 · AI 原创设计' : voiceWorkbenchId ? '声音来源草稿' : undefined}
+        voiceModuleHint={voiceValidationId ? '验证与发布 · 全部测试完成' : voiceReview ? '匿名评审 · 12 条候选' : voiceDesignId ? '声音来源 · AI 原创设计' : voiceWorkbenchId ? `声音来源 · ${currentVoiceSourceRoute()?.source || '草稿'}` : undefined}
       />
 
       {/* Main Workspace Body */}
@@ -416,12 +459,20 @@ export default function App() {
             <VoiceIdentityCreateView onCancel={openVoiceCenter} onContinue={openVoiceWorkbench} />
           )}
           {currentTab === 'voice-identities' && voiceWorkbenchId && !voiceCreateOpen && (
-            <VoiceIdentityWorkbenchEntry id={voiceWorkbenchId} onBack={() => reopenVoiceDraft(voiceWorkbenchId)} onCenter={openVoiceCenter} />
+            currentVoiceSourceRoute()?.source === '授权真人克隆'
+              ? <VoiceIdentityHumanCloneView id={voiceWorkbenchId} onOverview={openVoiceCenter} onCenter={openVoiceCenter} />
+              : <VoiceIdentityWorkbenchEntry id={voiceWorkbenchId} onBack={() => reopenVoiceDraft(voiceWorkbenchId)} onCenter={openVoiceCenter} />
           )}
           {currentTab === 'voice-identities' && voiceDesignId && !voiceCreateOpen && (
             <VoiceIdentityDesignView id={voiceDesignId} onCenter={openVoiceCenter} onOverview={voiceDesignId.startsWith('new-') ? () => reopenVoiceDraft(voiceDesignId) : openVoiceCenter} />
           )}
-          {currentTab === 'voice-identities' && !voiceCreateOpen && !voiceWorkbenchId && !voiceDesignId && (
+          {currentTab === 'voice-identities' && voiceReview && !voiceCreateOpen && (
+            <VoiceIdentityReviewView id={voiceReview.id} batchId={voiceReview.batchId} onBack={() => returnToVoiceSource(voiceReview.id)} />
+          )}
+          {currentTab === 'voice-identities' && voiceValidationId && !voiceCreateOpen && (
+            <VoiceIdentityValidationView id={voiceValidationId} onBack={() => returnToVoiceSource(voiceValidationId)} />
+          )}
+          {currentTab === 'voice-identities' && !voiceCreateOpen && !voiceWorkbenchId && !voiceDesignId && !voiceReview && !voiceValidationId && (
             <VoiceIdentitiesView
               globalSearch={searchQuery}
               onCountChange={setVoiceIdentityCount}
