@@ -1,9 +1,10 @@
 /**
  * 4. Audio Transcription & Analysis
- * P2：删除模拟转录兜底（硬性约束 #3）——无可用引擎时返回 503 engine_unavailable，
- * 响应中不含任何伪造 transcript；转录模型 ID 走白名单（#4）。
+ * P4：音频上传改 multipart 文件（硬性约束 #7：大音频不得 JSON Base64 传输）；
+ *     每次调用写入 generations 留痕（含失败）。
  */
 import { Router } from 'express';
+import multer from 'multer';
 import {
   whisperTranscribe,
   resolveTranscribeEngine,
@@ -13,15 +14,26 @@ import {
 import { ollamaIsAvailable, ollamaGenerateJson } from '../engines/reasoning';
 import { getGeminiClient, hasGeminiApiKey } from '../engines/geminiClient';
 import { fail } from './respond';
+import { recordGeneration } from '../db/generationsStore';
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 512 * 1024 * 1024 } });
+
+function generationId(): string {
+  return `asr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export const transcribeRouter = Router();
 
-transcribeRouter.post('/transcribe-audio', async (req, res) => {
+transcribeRouter.post('/transcribe-audio', upload.single('audio'), async (req, res) => {
   try {
-    const { audioBase64, mimeType = 'audio/wav', transcribeModel = 'gemini-2.5-flash' } = req.body;
+    const transcribeModel = String(req.body?.transcribeModel || 'gemini-2.5-flash');
+    const language = ['auto', 'zh', 'en'].includes(String(req.body?.language)) ? String(req.body.language) as 'auto' | 'zh' | 'en' : 'auto';
 
-    if (!audioBase64) {
-      return fail(res, 400, 'Audio data is required.', 'invalid_request');
+    if (req.body?.audioBase64) {
+      return fail(res, 400, 'JSON Base64 传输已停用：请以 multipart/form-data 上传音频文件（字段名 audio）。', 'unsupported_transport');
+    }
+    if (!req.file || req.file.buffer.length === 0) {
+      return fail(res, 400, 'Audio file is required (multipart/form-data, field "audio").', 'invalid_request');
     }
 
     // 模型白名单先于一切引擎探测：未知 ID 直接拒绝，绝不转发给 Gemini（硬性约束 #4）
@@ -38,16 +50,17 @@ transcribeRouter.post('/transcribe-audio', async (req, res) => {
       return fail(
         res,
         503,
-        '没有可用的转录引擎：本地 Whisper 服务未启动，且未配置 Gemini API key。请先启动 Whisper-ASR 服务（双击「启动网页版.command」）或配置 API key 后重试。',
+        '没有可用的转录引擎：本地 Whisper（Worker）未启动，且未配置 Gemini API key。请先启动 worker/「启动Worker.command」或配置 API key 后重试。',
         'engine_unavailable'
       );
     }
 
+    const genId = generationId();
+
     if (engine === 'whisper') {
       try {
-        const clean = String(audioBase64).replace(/^data:audio\/[a-z0-9]+;base64,/, '');
-        const wav = Buffer.from(clean, 'base64');
-        const { transcript, duration } = await whisperTranscribe(wav);
+        const wav = req.file.buffer;
+        const { transcript, duration } = await whisperTranscribe(wav, language);
 
         // 本地 LLM 顺手做摘要/情绪/标签（不可用时给保守兜底——仅元数据，不涉及转录文本伪造）
         let summary = '本地 Whisper 转录结果';
@@ -75,9 +88,29 @@ transcribeRouter.post('/transcribe-audio', async (req, res) => {
           }
         }
 
-        return res.json({ success: true, transcript, summary, mood, tags, duration, engine: 'whisper-local' });
+        recordGeneration({
+          id: genId,
+          kind: 'asr',
+          engine: 'whisper-local',
+          model: 'whisper-large-v3-turbo',
+          params: { language, fileSize: wav.length },
+          input_text: transcript,
+          duration_sec: duration,
+          status: 'done',
+        });
+
+        return res.json({ success: true, transcript, summary, mood, tags, duration, engine: 'whisper-local', generationId: genId });
       } catch (e: any) {
         console.warn('Whisper transcribe failed:', e.message);
+        recordGeneration({
+          id: genId,
+          kind: 'asr',
+          engine: 'whisper-local',
+          model: 'whisper-large-v3-turbo',
+          params: { language },
+          status: 'failed',
+          error: String(e.message || 'asr failed').slice(0, 500),
+        });
         return fail(res, 502, e.message || '本地转录失败。', 'asr_engine_failed', { engine: 'whisper-local' });
       }
     }
@@ -87,11 +120,11 @@ transcribeRouter.post('/transcribe-audio', async (req, res) => {
       return fail(res, 400, 'Gemini API key is not configured.', 'engine_not_configured', { engine: 'gemini' });
     }
 
-    const cleanBase64 = String(audioBase64).replace(/^data:audio\/[a-z0-9]+;base64,/, '');
-    const modelToUse = transcribeModel || 'gemini-2.5-flash';
+    const mimeType = req.file.mimetype || 'audio/wav';
+    const cleanBase64 = req.file.buffer.toString('base64');
 
     const response = await getGeminiClient().models.generateContent({
-      model: modelToUse,
+      model: transcribeModel,
       contents: [
         {
           inlineData: {
@@ -118,9 +151,19 @@ Output your response in JSON with:
     const parsed = JSON.parse(response.text?.trim() || '{}');
     if (!parsed.transcript) {
       // 模型未返回文字稿：如实失败，不落库任何模拟文本（硬性约束 #3）
+      recordGeneration({ id: genId, kind: 'asr', engine: 'gemini', model: transcribeModel, params: { language }, status: 'failed', error: 'empty transcript from gemini' });
       return fail(res, 502, '转录引擎未返回文字稿。', 'asr_engine_failed', { engine: 'gemini' });
     }
-    res.json({ success: true, ...parsed });
+    recordGeneration({
+      id: genId,
+      kind: 'asr',
+      engine: 'gemini',
+      model: transcribeModel,
+      params: { language },
+      input_text: String(parsed.transcript),
+      status: 'done',
+    });
+    res.json({ success: true, generationId: genId, ...parsed });
   } catch (error: any) {
     console.error('Transcription error:', error);
     return fail(res, 500, error.message || 'Transcription failed.', 'internal_error');

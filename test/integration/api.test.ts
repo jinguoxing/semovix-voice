@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
-import { setupTestEnv, cleanupTestEnv } from './helpers';
+import { setupTestEnv, cleanupTestEnv, tinyWavBuffer } from './helpers';
 
 let app: Express;
 let libraryDir: string;
@@ -96,10 +96,20 @@ describe('POST /api/transcribe-audio (honest failure, no simulated transcripts)'
     expect(res.body.code).toBe('invalid_request');
   });
 
+  it('rejects the legacy JSON audioBase64 transport with unsupported_transport', async () => {
+    const res = await request(app)
+      .post('/api/transcribe-audio')
+      .send({ audioBase64: tinyWavBuffer().toString('base64'), transcribeModel: 'gemini-2.5-flash' })
+      .expect(400);
+    expect(res.body.code).toBe('unsupported_transport');
+    expect(res.body.transcript).toBeUndefined();
+  });
+
   it('rejects unknown transcribe model IDs before any engine probing', async () => {
     const res = await request(app)
       .post('/api/transcribe-audio')
-      .send({ audioBase64: 'AAAA', transcribeModel: 'some-random-asr' })
+      .field('transcribeModel', 'some-random-asr')
+      .attach('audio', tinyWavBuffer(), { filename: 'a.wav', contentType: 'audio/wav' })
       .expect(400);
     expect(res.body.code).toBe('unsupported_transcribe_model');
     expect(res.body.supportedModels).toContain('whisper-local');
@@ -109,7 +119,8 @@ describe('POST /api/transcribe-audio (honest failure, no simulated transcripts)'
   it('returns 503 engine_unavailable with no transcript when no engine is reachable', async () => {
     const res = await request(app)
       .post('/api/transcribe-audio')
-      .send({ audioBase64: 'AAAA', transcribeModel: 'gemini-2.5-flash' })
+      .field('transcribeModel', 'gemini-2.5-flash')
+      .attach('audio', tinyWavBuffer(), { filename: 'a.wav', contentType: 'audio/wav' })
       .expect(503);
     expect(res.body.code).toBe('engine_unavailable');
     expect(res.body.error).toMatch(/Whisper|API key/);
@@ -118,5 +129,31 @@ describe('POST /api/transcribe-audio (honest failure, no simulated transcripts)'
     expect(res.body.success).toBeUndefined();
     expect(res.body.summary).toBeUndefined();
     expect(res.body.tags).toBeUndefined();
+  });
+});
+
+describe('GET /api/generations (traceability ledger, migration 0002)', () => {
+  it('lists engine failures with their真实 error and no output file', async () => {
+    const failed = await request(app)
+      .post('/api/generate-speech')
+      .send({ text: '留痕验证', ttsModel: 'qwen3-tts-local' })
+      .expect(502);
+    const genId = failed.body.generationId as string;
+    expect(genId).toMatch(/^tts-/);
+
+    const res = await request(app).get('/api/generations?limit=10').expect(200);
+    const rows = res.body.generations as Array<Record<string, any>>;
+    const row = rows.find(g => g.id === genId);
+    expect(row).toBeTruthy();
+    if (!row) return;
+    expect(row.kind).toBe('tts');
+    expect(row.status).toBe('failed');
+    expect(row.input_text).toBe('留痕验证');
+    expect(row.output_file).toBeNull();
+    expect(String(row.error)).toMatch(/network disabled|fetch/i);
+  });
+
+  it('404s for unknown artifact ids', async () => {
+    await request(app).get('/api/artifacts/does-not-exist').expect(404);
   });
 });

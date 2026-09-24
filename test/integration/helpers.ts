@@ -37,8 +37,8 @@ export function cleanupTestEnv(libraryDir: string): void {
   vi.unstubAllGlobals();
 }
 
-/** 生成一段最小合法 16-bit PCM WAV 的 base64（用于素材上传测试） */
-export function tinyWavBase64(sampleRate = 24000, frames = 240): string {
+/** 生成一段最小合法 16-bit PCM WAV 的 Buffer（multipart 上传测试用） */
+export function tinyWavBuffer(sampleRate = 24000, frames = 240): Buffer {
   const header = Buffer.alloc(44);
   header.write('RIFF', 0);
   header.writeUInt32LE(36 + frames * 2, 4);
@@ -55,5 +55,10 @@ export function tinyWavBase64(sampleRate = 24000, frames = 240): string {
   header.writeUInt32LE(frames * 2, 40);
   const pcm = Buffer.alloc(frames * 2);
   for (let i = 0; i < frames; i++) pcm.writeInt16LE(Math.round(Math.sin(i / 10) * 8000), i * 2);
-  return Buffer.concat([header, pcm]).toString('base64');
+  return Buffer.concat([header, pcm]);
+}
+
+/** 同上，base64 形式（校验服务端拒绝 JSON Base64 通道时用） */
+export function tinyWavBase64(sampleRate = 24000, frames = 240): string {
+  return tinyWavBuffer(sampleRate, frames).toString('base64');
 }
