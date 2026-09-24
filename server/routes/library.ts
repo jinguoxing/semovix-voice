@@ -3,11 +3,15 @@
  * （自 server.ts 原样迁移）
  */
 import { Router } from 'express';
+import multer from 'multer';
 import {
   listItems, getItem, saveItem, updateItem, deleteItem,
   writeItemFile, readItemFile,
   listFolders, saveFolder, deleteFolder, replaceFolders,
 } from '../db/libraryStore';
+import { fail } from './respond';
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 512 * 1024 * 1024 } });
 
 export const libraryRouter = Router();
 
@@ -16,22 +20,24 @@ libraryRouter.get('/library/items', (_req, res) => {
 });
 
 /**
- * 新建/覆盖素材。body: { item, audioBase64? }
- * audioBase64 带 data: 前缀亦可（data:audio/wav;base64,....）
+ * 新建/覆盖素材。P4 起音频走 multipart 文件上传（硬性约束 #7）：
+ *   multipart/form-data：字段 item（JSON 字符串）+ 文件 audio（可选，仅改元数据时不带）
  */
-libraryRouter.post('/library/items', (req, res) => {
+libraryRouter.post('/library/items', upload.single('audio'), (req, res) => {
   try {
-    const { item, audioBase64 } = req.body || {};
+    if (req.body?.audioBase64) {
+      return fail(res, 400, 'JSON Base64 传输已停用：请以 multipart/form-data 上传音频文件（字段名 audio）。', 'unsupported_transport');
+    }
+    const rawItem = req.body?.item;
+    const item = typeof rawItem === 'string' ? JSON.parse(rawItem) : rawItem;
     if (!item || !item.id) {
-      return res.status(400).json({ error: 'item (含 id) is required.' });
+      return fail(res, 400, 'item (含 id) is required.', 'invalid_request');
     }
 
     let payload = { ...item };
-    if (audioBase64) {
-      const clean = String(audioBase64).replace(/^data:audio\/[a-z0-9]+;base64,/, '');
-      const buf = Buffer.from(clean, 'base64');
-      writeItemFile(String(item.id), item.format || 'wav', buf);
-      payload = { ...payload, fileSize: buf.length };
+    if (req.file && req.file.buffer.length > 0) {
+      writeItemFile(String(item.id), item.format || 'wav', req.file.buffer);
+      payload = { ...payload, fileSize: req.file.buffer.length };
     }
 
     const saved = saveItem(payload);
