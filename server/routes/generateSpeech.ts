@@ -7,7 +7,7 @@
 import { Router } from 'express';
 import { resolveTtsAdapter } from '../engines/tts';
 import { hasGeminiApiKey } from '../engines/geminiClient';
-import { EngineValidationError } from '../engines/errors';
+import { EngineValidationError, describeError } from '../engines/errors';
 import { fail } from './respond';
 import { recordGeneration, writeArtifactFile } from '../db/generationsStore';
 
@@ -90,7 +90,8 @@ generateSpeechRouter.post('/generate-speech', async (req, res) => {
         return fail(res, 400, e.message, e.code, e.details);
       }
       // 引擎调用失败：如实上报 502 + 留痕，不降级、不伪造音频（硬性约束 #1/#2）
-      console.error(`TTS engine ${adapter.id} failed:`, e.message);
+      console.error(`TTS engine ${adapter.id} failed:`, e);
+      const described = describeError(e);
       recordGeneration({
         id: genId,
         kind: 'tts',
@@ -100,9 +101,9 @@ generateSpeechRouter.post('/generate-speech', async (req, res) => {
         params: { emotion, speed, temperature, multiSpeaker },
         input_text: inputText,
         status: 'failed',
-        error: String(e.message || 'tts failed').slice(0, 500),
+        error: described.slice(0, 500),
       });
-      return fail(res, 502, e.message || 'TTS engine call failed.', 'tts_engine_failed', { engine: adapter.id, generationId: genId });
+      return fail(res, 502, described || 'TTS engine call failed.', 'tts_engine_failed', { engine: adapter.id, generationId: genId });
     }
 
     const wav = Buffer.from(result.wavBase64, 'base64');

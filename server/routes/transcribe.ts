@@ -14,6 +14,7 @@ import {
 import { ollamaIsAvailable, ollamaGenerateJson } from '../engines/reasoning';
 import { getGeminiClient, hasGeminiApiKey } from '../engines/geminiClient';
 import { fail } from './respond';
+import { describeError } from '../engines/errors';
 import { recordGeneration } from '../db/generationsStore';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 512 * 1024 * 1024 } });
@@ -101,7 +102,8 @@ transcribeRouter.post('/transcribe-audio', upload.single('audio'), async (req, r
 
         return res.json({ success: true, transcript, summary, mood, tags, duration, engine: 'whisper-local', generationId: genId });
       } catch (e: any) {
-        console.warn('Whisper transcribe failed:', e.message);
+        console.warn('Whisper transcribe failed:', e);
+        const described = describeError(e);
         recordGeneration({
           id: genId,
           kind: 'asr',
@@ -109,9 +111,9 @@ transcribeRouter.post('/transcribe-audio', upload.single('audio'), async (req, r
           model: 'whisper-large-v3-turbo',
           params: { language },
           status: 'failed',
-          error: String(e.message || 'asr failed').slice(0, 500),
+          error: described.slice(0, 500),
         });
-        return fail(res, 502, e.message || '本地转录失败。', 'asr_engine_failed', { engine: 'whisper-local' });
+        return fail(res, 502, described || '本地转录失败。', 'asr_engine_failed', { engine: 'whisper-local' });
       }
     }
 

@@ -536,7 +536,7 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
                 <h4 className="text-sm font-bold text-rose-200">语音生成失败</h4>
                 <p className="text-xs text-rose-200/80 leading-relaxed break-words">{generationError}</p>
                 <p className="text-[11px] text-neutral-400">
-                  提示：云端引擎需在配置中填写 Gemini API key；本地引擎需先启动 Qwen3-TTS「启动网页版.command」。
+                  提示：本地引擎需先启动 Python FastAPI Worker（worker/「启动Worker.command」，端口 8800，启动后需等模型加载完成）；云端引擎需在配置中填写 Gemini API key 且网络可达。改完代码/配置后请重启服务。
                 </p>
               </div>
             </div>
