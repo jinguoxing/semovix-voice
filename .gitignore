@@ -13,3 +13,6 @@ library/
 # Python worker
 __pycache__/
 .pytest_cache/
+
+# 本地工具产物
+.playwright-cli/
