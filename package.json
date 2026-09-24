@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run --project unit",
-    "test:integration": "vitest run --project integration --passWithNoTests"
+    "test:integration": "vitest run --project integration --passWithNoTests",
+    "smoke:local": "tsx scripts/smoke-local.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
