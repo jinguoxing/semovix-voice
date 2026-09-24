@@ -266,7 +266,7 @@ export const AudioSFXStudio: React.FC<AudioSFXStudioProps> = ({
   };
 
   return (
-    <div className="flex-1 bg-neutral-950 p-6 overflow-y-auto pb-32">
+    <div className="player-aware-scroll flex-1 bg-neutral-950 p-6 overflow-y-auto">
       <div className="max-w-4xl mx-auto space-y-6">
         
         {/* Header */}

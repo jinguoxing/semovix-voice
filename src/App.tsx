@@ -67,9 +67,6 @@ export default function App() {
       setItems(storedItems);
       const loadedFolders = await getFolders();
       setFolders(loadedFolders);
-      if (storedItems.length > 0 && !activeItem) {
-        setActiveItem(storedItems[0]);
-      }
     }
     loadData();
   }, []);
@@ -152,11 +149,15 @@ export default function App() {
     setIsPlaying(!isPlaying);
   };
 
+  const handleCloseGlobalPlayer = () => {
+    setIsPlaying(false);
+    setActiveItem(null);
+  };
+
   // CRUD Operations
   const handleSaveToLibrary = async (newItem: AudioItem, blob?: Blob) => {
     const saved = await addAudioItem(newItem, blob);
     setItems(prev => [saved, ...prev]);
-    setActiveItem(saved);
   };
 
   const handleUpdateItem = async (id: string, updates: Partial<AudioItem>) => {
@@ -172,7 +173,7 @@ export default function App() {
     const updated = await deleteAudioItem(id);
     setItems(updated);
     if (activeItem?.id === id) {
-      setActiveItem(updated[0] || null);
+      setActiveItem(null);
       setIsPlaying(false);
     }
   };
@@ -181,7 +182,7 @@ export default function App() {
     const updated = await deleteMultipleAudioItems(ids);
     setItems(updated);
     if (activeItem && ids.includes(activeItem.id)) {
-      setActiveItem(updated[0] || null);
+      setActiveItem(null);
       setIsPlaying(false);
     }
   };
@@ -291,7 +292,7 @@ export default function App() {
       />
 
       {/* Main Workspace Body */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden" data-player-visible={Boolean(activeItem)}>
         
         {/* Left Sidebar (Only visible in library view) */}
         {currentTab === 'library' && (
@@ -378,6 +379,7 @@ export default function App() {
         item={activeItem}
         isPlaying={isPlaying}
         onTogglePlay={handleToggleGlobalPlay}
+        onClose={handleCloseGlobalPlayer}
         onOpenEditor={(item) => setEditingItem(item)}
       />
 

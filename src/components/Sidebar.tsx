@@ -72,7 +72,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   return (
-    <aside className="w-64 shrink-0 bg-neutral-900/60 border-r border-neutral-800 p-4 flex flex-col gap-6 overflow-y-auto h-[calc(100vh-4rem)]">
+    <aside className="player-aware-scroll w-64 shrink-0 bg-neutral-900/60 border-r border-neutral-800 p-4 flex flex-col gap-6 overflow-y-auto h-[calc(100vh-4rem)]">
       
       {/* 1. Category Navigation */}
       <div>

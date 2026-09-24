@@ -19,7 +19,8 @@ import {
   BarChart3,
   Sliders,
   X,
-  Maximize2
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import { AudioItem } from '../types/audio';
 import { getAudioContext } from '../utils/audioEngine';
@@ -33,6 +34,7 @@ interface GlobalPlayerProps {
   item: AudioItem | null;
   isPlaying: boolean;
   onTogglePlay: () => void;
+  onClose: () => void;
   onOpenEditor: (item: AudioItem) => void;
 }
 
@@ -40,6 +42,7 @@ export const GlobalPlayer: React.FC<GlobalPlayerProps> = ({
   item,
   isPlaying,
   onTogglePlay,
+  onClose,
   onOpenEditor,
 }) => {
   const [currentTime, setCurrentTime] = useState(0);
@@ -48,6 +51,7 @@ export const GlobalPlayer: React.FC<GlobalPlayerProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isLooping, setIsLooping] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
+  const [isExpanded, setIsExpanded] = useState(false);
 
   // Visualizer settings & HUD toggle
   const [isVisualizerHudOpen, setIsVisualizerHudOpen] = useState(false);
@@ -92,6 +96,8 @@ export const GlobalPlayer: React.FC<GlobalPlayerProps> = ({
   // Sync audio src when item changes
   useEffect(() => {
     if (!item) return;
+    setCurrentTime(0);
+    setDuration(item.duration);
     if (audioRef.current) {
       audioRef.current.src = item.audioUrl;
       audioRef.current.load();
@@ -104,6 +110,17 @@ export const GlobalPlayer: React.FC<GlobalPlayerProps> = ({
       }
     }
   }, [item?.id, item?.audioUrl]);
+
+  useEffect(() => {
+    if (item) return;
+    sourceNodeRef.current?.disconnect();
+    analyserRef.current?.disconnect();
+    sourceNodeRef.current = null;
+    analyserRef.current = null;
+    setAnalyserState(null);
+    setIsVisualizerHudOpen(false);
+    setIsExpanded(false);
+  }, [item]);
 
   // Sync play/pause state
   useEffect(() => {
@@ -186,8 +203,14 @@ export const GlobalPlayer: React.FC<GlobalPlayerProps> = ({
 
   const CategoryIcon = getCategoryIcon(item.category);
 
+  const handleClose = () => {
+    setIsVisualizerHudOpen(false);
+    setIsExpanded(false);
+    onClose();
+  };
+
   return (
-    <div className="fixed bottom-0 inset-x-0 z-40 bg-neutral-900/95 backdrop-blur-xl border-t border-neutral-800 px-4 py-2.5 shadow-2xl">
+    <div className="fixed bottom-0 inset-x-0 z-40 border-t border-neutral-800 bg-neutral-900/95 px-4 py-2 shadow-2xl backdrop-blur-xl">
       <audio
         ref={audioRef}
         crossOrigin="anonymous"
@@ -200,7 +223,7 @@ export const GlobalPlayer: React.FC<GlobalPlayerProps> = ({
       />
 
       {/* Expanded Studio Visualizer HUD Panel */}
-      {isVisualizerHudOpen && (
+      {isExpanded && isVisualizerHudOpen && (
         <div className="absolute bottom-full mb-3 inset-x-4 max-w-4xl mx-auto bg-neutral-900/95 backdrop-blur-2xl border border-neutral-700/80 rounded-2xl p-4 shadow-2xl z-50">
           <div className="flex items-center justify-between pb-3 mb-3 border-b border-neutral-800">
             <div className="flex items-center gap-2.5">
@@ -311,8 +334,9 @@ export const GlobalPlayer: React.FC<GlobalPlayerProps> = ({
         </div>
       )}
 
+      {isExpanded && (
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-        
+
         {/* Left: Track Info */}
         <div className="flex items-center gap-3 min-w-0 w-1/4">
           <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-600 to-indigo-600 flex items-center justify-center text-white shrink-0 shadow-md">
@@ -477,10 +501,75 @@ export const GlobalPlayer: React.FC<GlobalPlayerProps> = ({
             <Scissors className="w-3.5 h-3.5" />
             <span className="hidden lg:inline">剪辑调音</span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setIsVisualizerHudOpen(false);
+              setIsExpanded(false);
+            }}
+            aria-label="收起播放器"
+            title="收起播放器"
+            className="rounded-lg p-2 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+          >
+            <Minimize2 className="h-4 w-4" />
+          </button>
         </div>
 
       </div>
+      )}
+
+      {!isExpanded && (
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-3 gap-y-2 sm:flex-nowrap">
+          <div className="flex min-w-0 flex-1 items-center gap-2 sm:w-56 sm:flex-none">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-500/15 text-cyan-300">
+              <CategoryIcon className="h-4 w-4" />
+            </div>
+            <span className="truncate text-xs font-medium text-neutral-100" title={item.title}>{item.title}</span>
+          </div>
+
+          <button
+            type="button"
+            onClick={onTogglePlay}
+            aria-label={isPlaying ? '暂停播放' : '继续播放'}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-cyan-500 text-neutral-950 transition-colors hover:bg-cyan-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          >
+            {isPlaying ? <Pause className="h-4 w-4 fill-current" /> : <Play className="ml-0.5 h-4 w-4 fill-current" />}
+          </button>
+
+          <span className="hidden shrink-0 font-mono text-[11px] tabular-nums text-neutral-400 sm:block">{formatTime(currentTime)}</span>
+          <input
+            type="range"
+            min="0"
+            max={duration || 1}
+            step="0.05"
+            value={currentTime}
+            onChange={handleSeek}
+            aria-label="播放进度"
+            className="order-last h-1 w-full cursor-pointer accent-cyan-500 sm:order-none sm:min-w-0 sm:flex-1"
+          />
+          <span className="hidden shrink-0 font-mono text-[11px] tabular-nums text-neutral-400 sm:block">{formatTime(duration)}</span>
+
+          <button
+            type="button"
+            onClick={() => setIsExpanded(true)}
+            aria-label="展开播放器"
+            title="展开播放器"
+            className="rounded-lg p-2 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+          >
+            <Maximize2 className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={handleClose}
+            aria-label="关闭播放器"
+            title="关闭播放器"
+            className="rounded-lg p-2 text-neutral-400 transition-colors hover:bg-neutral-800 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };
-

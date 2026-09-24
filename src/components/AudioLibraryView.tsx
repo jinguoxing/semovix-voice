@@ -121,7 +121,7 @@ export const AudioLibraryView: React.FC<AudioLibraryViewProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col min-w-0 bg-neutral-950 p-6 overflow-y-auto pb-32">
+    <div className="player-aware-scroll flex-1 flex flex-col min-w-0 bg-neutral-950 p-6 overflow-y-auto">
       
       {/* Top Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-4 pb-5 border-b border-neutral-800">

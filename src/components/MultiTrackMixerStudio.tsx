@@ -477,7 +477,7 @@ export const MultiTrackMixerStudio: React.FC<MultiTrackMixerStudioProps> = ({
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
         
         {/* Left Side: Clip Ingestion & Mastering Rack */}
-        <div className="w-full md:w-80 border-r border-neutral-800 bg-neutral-900/40 p-4 flex flex-col gap-4 overflow-y-auto">
+        <div className="player-aware-scroll w-full md:w-80 border-r border-neutral-800 bg-neutral-900/40 p-4 flex flex-col gap-4 overflow-y-auto">
           
           {/* Quick Clip Ingestion */}
           <div className="p-3.5 bg-neutral-950/70 rounded-xl border border-neutral-800 space-y-3">
@@ -603,7 +603,7 @@ export const MultiTrackMixerStudio: React.FC<MultiTrackMixerStudioProps> = ({
         </div>
 
         {/* Right Side: Multi-Track Timeline */}
-        <div className="flex-1 flex flex-col overflow-y-auto p-4 md:p-6 space-y-4">
+        <div className="player-aware-scroll flex-1 flex flex-col overflow-y-auto p-4 md:p-6 space-y-4">
           
           {/* Timeline Header Ruler */}
           <div className="flex items-center pl-48 pr-4 py-2 border-b border-neutral-800 text-[10px] font-mono text-neutral-500 justify-between">

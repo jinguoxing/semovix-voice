@@ -82,16 +82,12 @@ export const Navbar: React.FC<NavbarProps> = ({
   ] as const;
 
   return (
-    <header className="sticky top-0 z-40 border-b border-slate-800 bg-[#0d1628]/95 shadow-[0_8px_24px_rgba(2,8,23,0.18)] backdrop-blur-xl">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="flex min-h-[72px] items-center justify-between gap-3 py-2.5 sm:gap-5">
-          <div className="flex shrink-0 items-center gap-3">
-            <div className="overflow-hidden rounded-lg bg-white shadow-[0_3px_12px_rgba(2,8,23,0.22)]">
-              <img src="/voice-logo.png" alt="Voice" className="block h-11 w-auto sm:h-12" />
-            </div>
-            <div className="hidden border-l border-slate-700 pl-3 sm:block">
-              <span className="block text-xs font-semibold tracking-wide text-slate-100">音频工作台</span>
-              <span className="block text-[11px] text-slate-400">创作 · 管理 · 混音</span>
+    <header className="sticky top-0 z-40 border-b border-slate-800 bg-[#0d1628]/95 backdrop-blur-xl">
+      <div className="w-full px-4 sm:px-6">
+        <div className="flex min-h-[72px] items-center justify-between gap-3 py-2.5 sm:gap-5 lg:grid lg:grid-cols-[16rem_minmax(0,1fr)_auto]">
+          <div className="flex shrink-0 items-center">
+            <div className="overflow-hidden rounded-lg bg-white ring-1 ring-white/15">
+              <img src="/voice-logo.png" alt="Voice" className="block h-11 w-auto sm:h-14" />
             </div>
           </div>
 
@@ -107,7 +103,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 onClick={onClick}
                 title={title}
                 aria-label={label}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-700/80 bg-slate-800/60 px-2.5 text-slate-200 transition-colors hover:border-slate-500 hover:bg-slate-700/70 hover:text-white active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 sm:px-3"
+                className="inline-flex h-10 w-9 items-center justify-center gap-2 rounded-lg border border-slate-700/80 bg-slate-800/60 px-0 text-slate-200 transition-colors hover:border-slate-500 hover:bg-slate-700/70 hover:text-white active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 sm:w-auto sm:px-3"
               >
                 <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
                 <span className="hidden whitespace-nowrap text-xs font-medium xl:inline">{label}</span>
@@ -120,7 +116,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           <SearchField searchQuery={searchQuery} onSearchChange={onSearchChange} />
         </div>
 
-        <div className="flex items-end justify-between gap-4">
+        <div className="flex items-end justify-between gap-4 lg:pl-64">
           <nav aria-label="工作台导航" className="min-w-0 flex-1 overflow-x-auto">
             <div className="flex min-w-max items-center gap-1">
               {navigation.map(({ id, label, icon: Icon }) => {
@@ -132,13 +128,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                     onClick={() => onTabChange(id)}
                     aria-current={active ? 'page' : undefined}
                     className={[
-                      'inline-flex h-11 items-center gap-2 whitespace-nowrap border-b-2 px-3 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 sm:px-4',
+                      'inline-flex h-12 items-center gap-2 whitespace-nowrap border-b-2 px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 sm:px-4',
                       active
                         ? 'border-sky-400 bg-sky-400/10 text-white'
-                        : 'border-transparent text-slate-400 hover:border-slate-600 hover:bg-white/5 hover:text-slate-100',
+                        : 'border-transparent text-slate-300 hover:border-slate-600 hover:bg-white/5 hover:text-white',
                     ].join(' ')}
                   >
-                    <Icon aria-hidden="true" className={'h-4 w-4 ' + (active ? 'text-sky-300' : 'text-slate-500')} />
+                    <Icon aria-hidden="true" className={'h-4 w-4 ' + (active ? 'text-sky-300' : 'text-slate-400')} />
                     <span>{label}</span>
                     {id === 'library' && (
                       <span className={'rounded px-1.5 py-0.5 font-mono text-[10px] tabular-nums ' + (active ? 'bg-sky-300/15 text-sky-200' : 'bg-slate-800 text-slate-400')}>

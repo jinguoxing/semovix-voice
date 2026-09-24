@@ -11,6 +11,14 @@
   }
 }
 
+.player-aware-scroll {
+  padding-bottom: 1.5rem;
+}
+
+[data-player-visible="true"] .player-aware-scroll {
+  padding-bottom: 8rem;
+}
+
 /* Custom sleek scrollbar for audio studio */
 ::-webkit-scrollbar {
   width: 6px;
