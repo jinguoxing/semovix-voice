@@ -97,12 +97,42 @@ export async function getAudioItems(): Promise<AudioItem[]> {
   }
 }
 
-export async function updateAudioItem(id: string, updates: Partial<AudioItem>): Promise<AudioItem[]> {
-  const { items } = await api<{ items: AudioItem[] }>(`/items/${encodeURIComponent(id)}`, {
+/** 部分更新素材元数据。服务端 PATCH 契约返回 { item }（单对象）。 */
+export async function updateAudioItem(id: string, updates: Partial<AudioItem>): Promise<AudioItem> {
+  const { item } = await api<{ item: AudioItem }>(`/items/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify(updates),
   });
-  return items;
+  return item;
+}
+
+/**
+ * 覆盖素材的服务端音频文件（P01 数据完整性）：multipart PUT。
+ * audio 元数据（duration/sampleRate/channels）经 query 同步，返回更新后的 item。
+ */
+export async function overwriteAudioFile(
+  id: string,
+  blob: Blob,
+  meta: { duration?: number; sampleRate?: number; channels?: number } = {},
+): Promise<AudioItem> {
+  const form = new FormData();
+  form.append('audio', blob, `${id}.wav`);
+
+  const qs = new URLSearchParams();
+  if (meta.duration && meta.duration > 0) qs.set('duration', String(meta.duration));
+  if (meta.sampleRate && meta.sampleRate > 0) qs.set('sampleRate', String(meta.sampleRate));
+  if (meta.channels && meta.channels > 0) qs.set('channels', String(meta.channels));
+
+  const res = await fetch(`/api/library/items/${encodeURIComponent(id)}/audio?${qs.toString()}`, {
+    method: 'PUT',
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`覆盖音频文件失败 (HTTP ${res.status}) ${detail.slice(0, 120)}`);
+  }
+  const { item } = await res.json() as { item: AudioItem };
+  return item;
 }
 
 export async function deleteAudioItem(id: string): Promise<AudioItem[]> {
@@ -193,7 +223,13 @@ function legacyGetBlob(db: IDBDatabase, id: string): Promise<Blob | null> {
   });
 }
 
-async function migrateLegacyDataIfNeeded(): Promise<void> {
+/**
+ * 一次性迁移：localStorage/IndexedDB → 服务端。
+ * P01 数据完整性：仅在「全部素材迁移成功」时才清理旧数据；
+ * 任何一条失败都保留旧数据下次重试（addAudioItem 为 upsert，重跑幂等）。
+ * 导出供单元测试覆盖“部分失败”场景。
+ */
+export async function migrateLegacyDataIfNeeded(): Promise<void> {
   if (localStorage.getItem(MIGRATION_FLAG)) return;
 
   try {
@@ -211,41 +247,62 @@ async function migrateLegacyDataIfNeeded(): Promise<void> {
     }
 
     // 2) 素材：meta + IndexedDB blob / data: URL → 服务端文件
+    //    解析损坏/IDB 不可用/单条失败都计入 failedCount——任何失败都不得清理旧数据（P01）
     let migratedCount = 0;
+    let failedCount = 0;
     if (rawItems) {
+      let items: AudioItem[] = [];
       try {
-        const items: AudioItem[] = JSON.parse(rawItems);
-        const db = await legacyOpenDB();
-        for (const item of items) {
-          try {
-            let blob: Blob | null = null;
-            if (item.audioUrl?.startsWith('data:')) {
-              blob = await (await fetch(item.audioUrl)).blob();
-            } else if (db) {
-              blob = await legacyGetBlob(db, item.id);
-            }
-            if (!blob) {
-              console.warn(`迁移跳过 ${item.id}：找不到音频数据`);
-              continue;
-            }
-            await addAudioItem(
-              { ...item, audioUrl: '' },
-              blob,
-            );
-            migratedCount++;
-          } catch (e) {
-            console.warn(`迁移素材 ${item.id} 失败，跳过`, e);
+        const parsed = JSON.parse(rawItems);
+        if (Array.isArray(parsed)) items = parsed;
+      } catch (e) {
+        console.warn('旧素材元数据损坏，保留原数据不迁移', e);
+        failedCount++;
+      }
+
+      let db: IDBDatabase | null = null;
+      try {
+        db = await legacyOpenDB();
+      } catch (e) {
+        console.warn('IndexedDB 打开失败，仅迁移 data: URL 形式的旧素材', e);
+      }
+
+      for (const item of items) {
+        try {
+          let blob: Blob | null = null;
+          if (item.audioUrl?.startsWith('data:')) {
+            blob = await (await fetch(item.audioUrl)).blob();
+          } else if (db) {
+            blob = await legacyGetBlob(db, item.id);
           }
+          if (!blob) {
+            console.warn(`迁移跳过 ${item.id}：找不到音频数据`);
+            failedCount++;
+            continue;
+          }
+          await addAudioItem(
+            { ...item, audioUrl: '' },
+            blob,
+          );
+          migratedCount++;
+        } catch (e) {
+          console.warn(`迁移素材 ${item.id} 失败，跳过`, e);
+          failedCount++;
         }
-        db?.close();
-      } catch { /* 损坏的旧数据直接丢弃 */ }
+      }
+      db?.close();
     }
 
     if (migratedCount > 0) {
       console.log(`[迁移] ${migratedCount} 条旧素材已搬入服务端素材库`);
     }
 
-    // 3) 清理旧数据（释放 localStorage 配额与 IndexedDB 空间）
+    // 3) 只有零失败才清理旧数据；部分失败时原样保留，下次加载重试（P01 数据完整性）
+    if (failedCount > 0) {
+      console.warn(`[迁移] ${failedCount} 条素材迁移失败，保留旧 localStorage/IndexedDB 数据以便重试`);
+      return;
+    }
+
     localStorage.removeItem(LEGACY_KEY_ITEMS);
     localStorage.removeItem(LEGACY_KEY_FOLDERS);
     if ('indexedDB' in window) {

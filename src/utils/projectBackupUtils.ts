@@ -33,7 +33,9 @@ export async function exportProjectToZip(
     }
 
     const safeTitle = item.title.replace(/[/\\?%*:|"<>]/g, '_').trim() || `item_${item.id}`;
-    const filename = `${safeTitle}_${item.id.slice(0, 8)}.wav`;
+    // P01：按素材真实格式取扩展名，不再一律 .wav（webm/mp3/ogg 导出后可直接播放）
+    const ext = ['wav', 'webm', 'mp3', 'ogg'].includes(item.format) ? item.format : 'wav';
+    const filename = `${safeTitle}_${item.id.slice(0, 8)}.${ext}`;
 
     try {
       const response = await fetch(item.audioUrl);

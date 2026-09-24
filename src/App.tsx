@@ -22,8 +22,9 @@ import { GlobalPlayer } from './components/GlobalPlayer';
 import { AudioItem, AudioFolder } from './types/audio';
 import { 
   getAudioItems, 
-  addAudioItem, 
-  updateAudioItem, 
+  addAudioItem,
+  updateAudioItem,
+  overwriteAudioFile,
   deleteAudioItem, 
   deleteMultipleAudioItems, 
   moveAudioToFolder, 
@@ -159,10 +160,11 @@ export default function App() {
   };
 
   const handleUpdateItem = async (id: string, updates: Partial<AudioItem>) => {
+    // PATCH 契约返回单个更新后的 item；本地合并保持列表状态一致
     const updated = await updateAudioItem(id, updates);
-    setItems(updated);
+    setItems(prev => prev.map(it => (it.id === id ? { ...it, ...updated } : it)));
     if (activeItem?.id === id) {
-      setActiveItem({ ...activeItem, ...updates });
+      setActiveItem({ ...activeItem, ...updated });
     }
   };
 
@@ -196,6 +198,25 @@ export default function App() {
 
   const handleUpdateRating = async (id: string, rating: number) => {
     handleUpdateItem(id, { rating });
+  };
+
+  // 编辑器“覆盖原素材”：先真正覆盖服务端音频文件，再合并元数据（P01 数据完整性）
+  const handleOverwriteAudioItem = async (
+    id: string,
+    updates: Partial<AudioItem>,
+    blob?: Blob,
+  ) => {
+    if (blob) {
+      const updated = await overwriteAudioFile(id, blob, {
+        duration: updates.duration,
+      });
+      setItems(prev => prev.map(it => (it.id === id ? { ...it, ...updated } : it)));
+      if (activeItem?.id === id) setActiveItem(prev => (prev ? { ...prev, ...updated } : prev));
+    }
+    // audioUrl 是 DSP 产生的本地 blob: URL，不应写入服务端元数据；其余字段照常 PATCH
+    const { audioUrl: _drop, ...metaOnly } = updates;
+    void _drop;
+    await handleUpdateItem(id, metaOnly);
   };
 
   const handleDownload = (item: AudioItem) => {
@@ -366,7 +387,7 @@ export default function App() {
           item={editingItem}
           onClose={() => setEditingItem(null)}
           onSaveAsNew={(newItem, blob) => handleSaveToLibrary(newItem, blob)}
-          onOverwrite={(id, updates, blob) => handleUpdateItem(id, updates)}
+          onOverwrite={(id, updates, blob) => handleOverwriteAudioItem(id, updates, blob)}
         />
       )}
 
