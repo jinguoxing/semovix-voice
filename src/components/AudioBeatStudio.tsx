@@ -15,18 +15,22 @@ import {
 import { AudioItem, AudioFolder, BeatPattern, SequencerTrack } from '../types/audio';
 import { getAudioContext, renderBeatPattern, noteToFreq } from '../utils/audioEngine';
 import { getVoiceModelConfig } from '../utils/voiceModelConfig';
+import { GuofengComposer } from './GuofengComposer';
 
 interface AudioBeatStudioProps {
+  items: AudioItem[];
   folders: AudioFolder[];
   onSaveToLibrary: (item: AudioItem, blob?: Blob) => void;
   onOpenEditor: (item: AudioItem) => void;
 }
 
 export const AudioBeatStudio: React.FC<AudioBeatStudioProps> = ({
+  items,
   folders,
   onSaveToLibrary,
   onOpenEditor,
 }) => {
+  const [mode, setMode] = useState<'guofeng' | 'beat'>('guofeng');
   const [bpm, setBpm] = useState(96);
   const [patternName, setPatternName] = useState('Lo-Fi 沉浸律动 (Chill Groove)');
   const [scale, setScale] = useState('C Minor');
@@ -298,8 +302,13 @@ export const AudioBeatStudio: React.FC<AudioBeatStudioProps> = ({
   };
 
   return (
-    <div className="player-aware-scroll flex-1 bg-neutral-950 p-6 overflow-y-auto">
+    <>
+    <div className={mode === 'guofeng' ? 'flex min-h-0 min-w-0 flex-1' : 'hidden'}>
+      <GuofengComposer active={mode === 'guofeng'} items={items} folders={folders} onSaveToLibrary={onSaveToLibrary} onSwitchToBeat={() => setMode('beat')} />
+    </div>
+    <div className={`${mode === 'beat' ? 'flex-1' : 'hidden'} player-aware-scroll bg-neutral-950 p-6 overflow-y-auto`}>
       <div className="max-w-5xl mx-auto space-y-6">
+        <div className="flex justify-end"><button onClick={() => { setIsPlaying(false); setMode('guofeng'); }} className="rounded-lg border border-amber-500/50 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/10">进入国风音乐创作</button></div>
         
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-neutral-800">
@@ -547,5 +556,6 @@ export const AudioBeatStudio: React.FC<AudioBeatStudioProps> = ({
 
       </div>
     </div>
+    </>
   );
 };

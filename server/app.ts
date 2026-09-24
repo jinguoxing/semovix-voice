@@ -8,6 +8,7 @@ import { voiceModelStatusRouter } from './routes/voiceModelStatus';
 import { generateSpeechRouter } from './routes/generateSpeech';
 import { soundRecipeRouter } from './routes/soundRecipe';
 import { musicPatternRouter } from './routes/musicPattern';
+import { guofengRouter } from './routes/guofeng';
 import { transcribeRouter } from './routes/transcribe';
 import { autoTagRouter } from './routes/autoTag';
 import { libraryRouter } from './routes/library';
@@ -23,6 +24,7 @@ export function createApp(): express.Express {
   app.use('/api', generateSpeechRouter);
   app.use('/api', soundRecipeRouter);
   app.use('/api', musicPatternRouter);
+  app.use('/api', guofengRouter);
   app.use('/api', transcribeRouter);
   app.use('/api', autoTagRouter);
   app.use('/api', libraryRouter);

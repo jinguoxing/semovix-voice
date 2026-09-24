@@ -357,6 +357,7 @@ export default function App() {
 
           {currentTab === 'beat' && (
             <AudioBeatStudio
+              items={items}
               folders={folders}
               onSaveToLibrary={handleSaveToLibrary}
               onOpenEditor={(item) => setEditingItem(item)}

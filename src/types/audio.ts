@@ -29,7 +29,7 @@ export interface AudioItem {
     emotion?: string;
     prompt?: string;
     isAiGenerated?: boolean;
-    source?: 'tts' | 'sfx-generator' | 'beat-sequencer' | 'mic-recording' | 'imported' | 'edited';
+    source?: 'tts' | 'sfx-generator' | 'beat-sequencer' | 'guofeng-composer' | 'mic-recording' | 'imported' | 'edited';
     [key: string]: any;
   };
 }
@@ -202,4 +202,3 @@ export interface MasteringPreset {
   eqBoostHigh: number;
   compressionRatio: number;
 }
-
