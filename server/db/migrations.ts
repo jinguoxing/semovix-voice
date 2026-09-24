@@ -7,6 +7,7 @@
  */
 import Database from 'better-sqlite3';
 import { baseline as migration0001 } from './migrations/0001_baseline';
+import { generations as migration0002 } from './migrations/0002_generations';
 
 export interface Migration {
   version: string; // 形如 '0001'，字典序即执行序
@@ -16,6 +17,7 @@ export interface Migration {
 
 export const MIGRATIONS: Migration[] = [
   migration0001,
+  migration0002,
 ];
 
 export function migrate(db: Database.Database): string[] {

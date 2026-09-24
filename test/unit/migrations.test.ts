@@ -66,7 +66,7 @@ describe('migrate()', () => {
 
     const db = new Database(dbPath);
     const applied = migrate(db);
-    expect(applied).toEqual(['0001']); // 基线被补记
+    expect(applied).toEqual(MIGRATIONS.map(m => m.version)); // 基线补记 + 后续增量迁移全部补齐
     const row = db.prepare('SELECT title FROM items WHERE id = ?').get('legacy-1') as { title: string };
     expect(row.title).toBe('旧素材'); // 数据无损
     db.close();
