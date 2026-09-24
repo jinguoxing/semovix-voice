@@ -110,7 +110,7 @@ function readDraft(id: string, identity: Identity): DesignDraft {
 
 const countChinese = (text: string) => (text.match(/[\u3400-\u9fff]/g) || []).length;
 
-export function VoiceIdentityDesignView({ id, onCenter, onOverview }: { id: string; onCenter: () => void; onOverview?: () => void }) {
+export function VoiceIdentityDesignView({ id, onCenter, onOverview, onReview }: { id: string; onCenter: () => void; onOverview?: () => void; onReview: (id: string, batchId: string) => void }) {
   const [identity] = useState(() => readIdentity(id));
   const [draft, setDraft] = useState<DesignDraft>(() => readDraft(id, identity));
   const [saved, setSaved] = useState(false);
@@ -228,7 +228,7 @@ export function VoiceIdentityDesignView({ id, onCenter, onOverview }: { id: stri
         <div className="vd-source-banner"><div><span className="vd-source-caption">当前来源</span><strong><AudioLines size={15} />AI 原创设计</strong><p>适用于希望创建原创、可长期复用声音身份的品牌、产品、栏目或角色场景。</p></div><div className="vd-batch-summary"><span>声音设计批次</span><strong>{batch?.label || '尚未创建'}</strong><small>{batch ? `${batch.completedCount} / ${batch.totalCount} 条候选` : '开始生成后创建新批次'}</small></div></div>
         {saved && <div className="vd-saved-note"><Check size={13} />来源配置草稿已保存</div>}
         {message && <div className="vd-feedback" role="status">{message}<button type="button" onClick={() => setMessage('')} aria-label="关闭提示"><X size={14} /></button></div>}
-        {batch && <div className="vd-batch-progress" role="status"><strong>{batch.label}</strong><span>{batch.status === 'queued' ? '排队中' : batch.status === 'warming' ? '模型加载中' : batch.status === 'running' ? '候选生成中' : batch.status === 'completed' ? '候选生成完成' : '生成失败'}</span><span>{batch.completedCount} / {batch.totalCount} 条</span>{batch.error && <em>{batch.error}</em>}</div>}
+        {batch && <div className="vd-batch-progress" role="status"><strong>{batch.label}</strong><span>{batch.status === 'queued' ? '排队中' : batch.status === 'warming' ? '模型加载中' : batch.status === 'running' ? '候选生成中' : batch.status === 'completed' ? '候选生成完成' : '生成失败'}</span><span>{batch.completedCount} / {batch.totalCount} 条</span>{batch.status === 'completed' && <button type="button" onClick={() => onReview(id, batch.id)}>进入匿名评审</button>}{batch.error && <em>{batch.error}</em>}</div>}
 
         <div className="vd-columns">
           <div className="vd-left-column">

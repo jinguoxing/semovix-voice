@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft, AudioLines, Check, CheckCircle2, CircleHelp, Download,
   Headphones, Maximize2, Pause, Play, RefreshCw, Repeat2, Save,
@@ -24,6 +24,10 @@ const REFERENCE_TEXT = `企业里的数据，从来不只是字段和表。
 人工智能才能真正理解业务，
 并把可靠判断，转化为可以执行的行动。`;
 const DEFAULT_NOTE = '整体专业可信，音色厚度适中。\n长句节奏稳定，句尾收束自然。\n少量关键词强调略明显，但不影响长期使用。';
+const DEFAULT_SCORES: Record<number, number[]> = Object.fromEntries(CANDIDATES.map(candidate => [candidate.id, [4, 4, 4, 4, 4, 4, 4]]));
+DEFAULT_SCORES[2] = [5, 4, 5, 4, 4, 5, 4];
+DEFAULT_SCORES[7] = [4, 4, 4, 5, 4, 4, 5];
+DEFAULT_SCORES[11] = [4, 4, 4, 4, 4, 5, 4];
 
 function padded(id: number) { return `#${String(id).padStart(3, '0')}`; }
 function formatDuration(duration: number) { return `0:${String(duration).padStart(2, '0')}`; }
@@ -34,7 +38,7 @@ function Wave({ id, dense = false }: { id: number; dense?: boolean }) {
   return <span className={`vr-wave ${dense ? 'is-dense' : ''}`} aria-hidden="true">{makeWave(id).map((height, index) => <i key={index} style={{ height }} />)}</span>;
 }
 
-export function VoiceIdentityReviewView({ id, batchId, onBack }: { id: string; batchId: string; onBack: () => void }) {
+export function VoiceIdentityReviewView({ id, batchId, onBack, onEnterValidation }: { id: string; batchId: string; onBack: () => void; onEnterValidation: (finalists: number[]) => void }) {
   const roleName = id === 'semovix' ? 'Semovix 官方讲解员' : '当前声音角色';
   const ownerName = id === 'semovix' ? 'Semovix' : '当前归属对象';
   const [selectedId, setSelectedId] = useState(2);
@@ -42,9 +46,7 @@ export function VoiceIdentityReviewView({ id, batchId, onBack }: { id: string; b
   const [queueOrder, setQueueOrder] = useState(() => CANDIDATES.map(candidate => candidate.id));
   const [finalists, setFinalists] = useState<number[]>([2, 7, 11]);
   const [eliminated, setEliminated] = useState<number[]>([4, 9]);
-  const [scores, setScores] = useState<Record<number, number[]>>({
-    2: [5, 4, 5, 4, 4, 5, 4], 7: [4, 4, 4, 5, 4, 4, 5], 11: [4, 4, 4, 4, 4, 5, 4],
-  });
+  const [scores, setScores] = useState<Record<number, number[]>>(() => ({ ...DEFAULT_SCORES }));
   const [vetoes, setVetoes] = useState<Record<number, string[]>>({});
   const [note, setNote] = useState(DEFAULT_NOTE);
   const [tags, setTags] = useState<string[]>([]);
@@ -55,6 +57,25 @@ export function VoiceIdentityReviewView({ id, batchId, onBack }: { id: string; b
   const [playerExpanded, setPlayerExpanded] = useState(false);
   const [message, setMessage] = useState('');
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/voice-design/batches/${encodeURIComponent(batchId)}/review`)
+      .then(response => response.ok ? response.json() as Promise<{ review: { finalists: number[]; eliminated: number[]; scores: Record<number, number[]>; vetoes: Record<number, string[]>; note: string; tags: string[] } | null }> : null)
+      .then(result => {
+        if (!live || !result?.review) return;
+        setFinalists(result.review.finalists);
+        setEliminated(result.review.eliminated);
+        setScores(current => ({ ...current, ...result.review!.scores }));
+        setVetoes(result.review.vetoes);
+        setNote(result.review.note);
+        setTags(result.review.tags);
+        setSaved(true);
+      })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [batchId]);
 
   const selected = CANDIDATES.find(candidate => candidate.id === selectedId) || CANDIDATES[1];
   const selectedScores = scores[selected.id] || [4, 4, 4, 4, 4, 4, 4];
@@ -104,13 +125,25 @@ export function VoiceIdentityReviewView({ id, batchId, onBack }: { id: string; b
     notify(`${padded(selected.id)} 已标记为淘汰，评审记录仍会保留。`);
   };
 
-  const saveReview = () => {
+  const saveReview = async () => {
     try {
       const key = `voice-studio-review:${id}:${batchId}`;
-      window.localStorage.setItem(key, JSON.stringify({ selectedId, finalists, eliminated, scores, vetoes, note, tags, updatedAt: new Date().toISOString() }));
+      const payload = { identityId: id, selectedId, finalists, eliminated, scores, vetoes, note, tags };
+      window.localStorage.setItem(key, JSON.stringify({ ...payload, updatedAt: new Date().toISOString() }));
+      setSaving(true);
+      const response = await fetch(`/api/voice-design/batches/${encodeURIComponent(batchId)}/review`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || '评审记录保存失败');
       setSaved(true);
       setMessage('全部匿名评审记录已保存。');
+      return true;
     } catch { notify('评审记录保存失败，请检查浏览器存储空间。'); }
+    finally { setSaving(false); }
+    return false;
+  };
+
+  const continueToValidation = async () => {
+    if (await saveReview()) onEnterValidation(finalists);
   };
 
   const randomizeQueue = () => {
@@ -142,7 +175,7 @@ export function VoiceIdentityReviewView({ id, batchId, onBack }: { id: string; b
 
     <main className="vr-workspace">
       <div className="vr-content">
-        <header className="vr-header"><div><div className="vr-title-row"><h1>候选匿名评审</h1><span className="vr-anonymous-badge">匿名模式已开启</span></div><p>隐藏声音方向与生成信息，基于统一标准独立评价声音表现，并选择进入验证与发布的候选。</p><div className="vr-metadata"><span>声音角色：<b>{roleName}</b></span><span>设计批次：<b>Batch {batchId}</b></span><span>候选数量：<b>12</b></span><span>参考文本：<b>统一</b></span><span>匿名模式：<b>已开启</b></span></div></div><div className="vr-header-actions"><button type="button" className="vr-secondary" onClick={saveReview}><Save size={15} />保存全部评审</button><button type="button" className="vr-primary" disabled={!canEnterVerification} onClick={() => notify(`评审已完成，${finalists.length} 条入围候选已准备进入验证与发布。`)}><CheckCircle2 size={16} />进入验证与发布 · {finalists.length}</button></div></header>
+        <header className="vr-header"><div><div className="vr-title-row"><h1>候选匿名评审</h1><span className="vr-anonymous-badge">匿名模式已开启</span></div><p>隐藏声音方向与生成信息，基于统一标准独立评价声音表现，并选择进入验证与发布的候选。</p><div className="vr-metadata"><span>声音角色：<b>{roleName}</b></span><span>设计批次：<b>Batch {batchId}</b></span><span>候选数量：<b>12</b></span><span>参考文本：<b>统一</b></span><span>匿名模式：<b>已开启</b></span></div></div><div className="vr-header-actions"><button type="button" className="vr-secondary" onClick={() => void saveReview()} disabled={saving}><Save size={15} />{saving ? '正在保存' : '保存全部评审'}</button><button type="button" className="vr-primary" disabled={!canEnterVerification || saving} onClick={() => void continueToValidation()}><CheckCircle2 size={16} />进入验证与发布 · {finalists.length}</button></div></header>
         <div className="vr-anonymous-strip"><div><CheckCircle2 size={15} /><span><strong>匿名评审已开启</strong>当前仅显示随机候选编号。声音方向、设计指令、Seed 和原始生成顺序将在评审任务完成前保持隐藏。</span></div><button type="button" onClick={randomizeQueue}><Shuffle size={13} />重新随机排序</button></div>
         {message && <div className="vr-feedback" role="status"><span>{message}</span><button type="button" onClick={() => setMessage('')} aria-label="关闭提示"><X size={14} /></button></div>}
         {saved && <div className="vr-saved-note"><Check size={13} />评审记录已保存</div>}
@@ -167,7 +200,7 @@ export function VoiceIdentityReviewView({ id, batchId, onBack }: { id: string; b
 
             <section className="vr-panel vr-note-panel"><div className="vr-panel-heading"><div><h2>评审备注</h2><p>记录当前候选的判断依据。</p></div><span>{note.length} / 300</span></div><textarea aria-label="评审备注" maxLength={300} value={note} onChange={event => { setNote(event.target.value); setSaved(false); }} /><div className="vr-quick-tags">{QUICK_TAGS.map(tag => <button type="button" key={tag} className={tags.includes(tag) ? 'is-selected' : ''} onClick={() => setTags(current => current.includes(tag) ? current.filter(item => item !== tag) : [...current, tag])}>{tag}</button>)}</div></section>
 
-            <section className="vr-panel vr-candidate-actions"><div className="vr-panel-heading"><div><h2>候选操作</h2><p>保存操作不会改变匿名候选编号。</p></div></div><div><button type="button" className="vr-eliminate" onClick={markEliminated}>标记淘汰</button><button type="button" className="vr-secondary" onClick={saveReview}><Save size={13} />保存评分</button><button type="button" className={selectedIsFinalist ? 'vr-finalist-state' : 'vr-secondary'} disabled={selectedIsFinalist} onClick={toggleFinalist}>{selectedIsFinalist ? <><CheckCircle2 size={13} />已入围</> : '加入入围'}</button></div></section>
+            <section className="vr-panel vr-candidate-actions"><div className="vr-panel-heading"><div><h2>候选操作</h2><p>保存操作不会改变匿名候选编号。</p></div></div><div><button type="button" className="vr-eliminate" onClick={markEliminated}>标记淘汰</button><button type="button" className="vr-secondary" onClick={() => void saveReview()} disabled={saving}><Save size={13} />保存评分</button><button type="button" className={selectedIsFinalist ? 'vr-finalist-state' : 'vr-secondary'} disabled={selectedIsFinalist} onClick={toggleFinalist}>{selectedIsFinalist ? <><CheckCircle2 size={13} />已入围</> : '加入入围'}</button></div></section>
 
             <aside className="vr-guidance-card"><strong>评审建议</strong><ul><li>使用统一音量完整试听</li><li>不根据编号顺序判断</li><li>优先评价声音身份与长听体验</li><li>明显播音腔或营销感使用硬性否决</li><li>完成前不要查看方向与 Prompt</li></ul></aside>
           </aside>

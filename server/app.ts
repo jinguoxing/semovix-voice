@@ -14,6 +14,7 @@ import { autoTagRouter } from './routes/autoTag';
 import { libraryRouter } from './routes/library';
 import { generationsRouter } from './routes/generations';
 import { voiceDesignRouter } from './routes/voiceDesign';
+import { voiceLifecycleRouter } from './routes/voiceLifecycle';
 
 export function createApp(): express.Express {
   const app = express();
@@ -31,6 +32,7 @@ export function createApp(): express.Express {
   app.use('/api', libraryRouter);
   app.use('/api', generationsRouter);
   app.use('/api', voiceDesignRouter);
+  app.use('/api', voiceLifecycleRouter);
 
   return app;
 }
