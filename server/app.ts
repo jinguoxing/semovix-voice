@@ -13,6 +13,7 @@ import { transcribeRouter } from './routes/transcribe';
 import { autoTagRouter } from './routes/autoTag';
 import { libraryRouter } from './routes/library';
 import { generationsRouter } from './routes/generations';
+import { voiceDesignRouter } from './routes/voiceDesign';
 
 export function createApp(): express.Express {
   const app = express();
@@ -29,6 +30,7 @@ export function createApp(): express.Express {
   app.use('/api', autoTagRouter);
   app.use('/api', libraryRouter);
   app.use('/api', generationsRouter);
+  app.use('/api', voiceDesignRouter);
 
   return app;
 }

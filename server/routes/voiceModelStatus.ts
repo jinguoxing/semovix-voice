@@ -16,6 +16,7 @@ export const voiceModelStatusRouter = Router();
 /** 允许预热的引擎（Worker 引擎名 → 路由参数） */
 const WARMUP_ENGINES: Record<string, WorkerEngineId> = {
   qwen_tts: 'qwen_tts',
+  voice_design: 'voice_design',
   whisper_asr: 'whisper_asr',
 };
 
@@ -41,6 +42,14 @@ voiceModelStatusRouter.get('/voice-model/status', async (_req, res) => {
       state: worker.qwen_tts.state,
       available: worker.qwen_tts.state === 'ready',
       error: worker.qwen_tts.error,
+    },
+    {
+      id: 'qwen3-tts-voice-design',
+      label: 'Qwen3-TTS-12Hz-1.7B-VoiceDesign (Worker)',
+      reachable: worker.reachable,
+      state: worker.voice_design.state,
+      available: worker.voice_design.available,
+      error: worker.voice_design.error,
     },
     {
       id: LOCAL_REASONING_ID,

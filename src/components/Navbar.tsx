@@ -12,7 +12,7 @@ import {
   Upload,
 } from 'lucide-react';
 
-export type StudioTab = 'library' | 'tts' | 'sfx' | 'beat' | 'multitrack';
+export type StudioTab = 'library' | 'voice-identities' | 'tts' | 'sfx' | 'beat' | 'multitrack';
 
 interface NavbarProps {
   currentTab: StudioTab;
@@ -25,28 +25,33 @@ interface NavbarProps {
   onOpenProjectBackup: () => void;
   totalItems: number;
   totalDurationSeconds: number;
+  voiceIdentityCount?: number;
+  isCreatingVoiceIdentity?: boolean;
+  voiceModuleHint?: string;
 }
 
 const navigation = [
   { id: 'library', label: '素材库', icon: FolderGit2 },
-  { id: 'tts', label: 'AI 语音合成', icon: Radio },
+  { id: 'voice-identities', label: '声音角色', icon: Radio },
+  { id: 'tts', label: 'AI 语音生成', icon: Radio },
   { id: 'sfx', label: '智能音效', icon: Sparkles },
-  { id: 'beat', label: '节奏工坊', icon: Music },
-  { id: 'multitrack', label: '多轨混音台', icon: Layers },
+  { id: 'beat', label: '音乐与伴奏', icon: Music },
+  { id: 'multitrack', label: '多轨混音', icon: Layers },
 ] as const;
 
-const SearchField: React.FC<Pick<NavbarProps, 'searchQuery' | 'onSearchChange'>> = ({
+const SearchField: React.FC<Pick<NavbarProps, 'searchQuery' | 'onSearchChange'> & { placeholder?: string }> = ({
   searchQuery,
   onSearchChange,
+  placeholder,
 }) => (
   <div className="relative w-full">
     <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
     <input
       type="search"
-      aria-label="搜索音频、标签或转录"
+      aria-label="全局搜索"
       value={searchQuery}
       onChange={(event) => onSearchChange(event.target.value)}
-      placeholder="搜索音频、标签或转录..."
+      placeholder={placeholder || '搜索音频、标签或转录…'}
       className="h-10 w-full rounded-lg border border-slate-700/80 bg-slate-950/70 pl-10 pr-3 text-sm text-slate-100 placeholder:text-slate-500 transition-colors focus:border-sky-400/70 focus:outline-none focus:ring-2 focus:ring-sky-400/20"
     />
   </div>
@@ -63,6 +68,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenProjectBackup,
   totalItems,
   totalDurationSeconds,
+  voiceIdentityCount = 8,
+  isCreatingVoiceIdentity = false,
+  voiceModuleHint,
 }) => {
   const formatTotalTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -91,8 +99,8 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </div>
 
-          <div className="hidden min-w-0 max-w-sm flex-1 md:block">
-            <SearchField searchQuery={searchQuery} onSearchChange={onSearchChange} />
+          <div className="hidden min-w-0 max-w-[390px] flex-1 md:block">
+            <SearchField searchQuery={searchQuery} onSearchChange={onSearchChange} placeholder={currentTab === 'voice-identities' ? '搜索声音角色、品牌、用途、标签…' : undefined} />
           </div>
 
           <div className="flex shrink-0 items-center gap-1 sm:gap-1.5" aria-label="快捷操作">
@@ -113,10 +121,10 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         <div className="pb-2 md:hidden">
-          <SearchField searchQuery={searchQuery} onSearchChange={onSearchChange} />
+          <SearchField searchQuery={searchQuery} onSearchChange={onSearchChange} placeholder={currentTab === 'voice-identities' ? '搜索声音角色、品牌、用途、标签…' : undefined} />
         </div>
 
-        <div className="flex items-end justify-between gap-4 lg:pl-64">
+        <div className="flex items-end justify-between gap-4">
           <nav aria-label="工作台导航" className="min-w-0 flex-1 overflow-x-auto">
             <div className="flex min-w-max items-center gap-1">
               {navigation.map(({ id, label, icon: Icon }) => {
@@ -130,13 +138,13 @@ export const Navbar: React.FC<NavbarProps> = ({
                     className={[
                       'inline-flex h-12 items-center gap-2 whitespace-nowrap border-b-2 px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 sm:px-4',
                       active
-                        ? 'border-sky-400 bg-sky-400/10 text-white'
+                        ? 'border-cyan-400 bg-cyan-400/[0.07] text-cyan-300'
                         : 'border-transparent text-slate-300 hover:border-slate-600 hover:bg-white/5 hover:text-white',
                     ].join(' ')}
                   >
                     <Icon aria-hidden="true" className={'h-4 w-4 ' + (active ? 'text-sky-300' : 'text-slate-400')} />
                     <span>{label}</span>
-                    {id === 'library' && (
+                    {id === 'library' && currentTab === 'library' && (
                       <span className={'rounded px-1.5 py-0.5 font-mono text-[10px] tabular-nums ' + (active ? 'bg-sky-300/15 text-sky-200' : 'bg-slate-800 text-slate-400')}>
                         {totalItems}
                       </span>
@@ -147,8 +155,11 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           </nav>
           <div className="hidden shrink-0 pb-3 text-right lg:block">
-            <span className="mr-2 text-[11px] text-slate-500">素材总时长</span>
-            <span className="font-mono text-xs tabular-nums text-slate-300">{formatTotalTime(totalDurationSeconds)}</span>
+            {currentTab === 'voice-identities' ? (
+              voiceModuleHint ? <span className="text-[11px] text-slate-400">{voiceModuleHint}</span> : isCreatingVoiceIdentity ? <span className="text-[11px] text-slate-400">新建角色草稿</span> : <span className="text-[11px] text-slate-400">声音角色总数 <span className="ml-1 font-mono text-slate-200">{voiceIdentityCount}</span></span>
+            ) : (
+              <><span className="mr-2 text-[11px] text-slate-500">素材总时长</span><span className="font-mono text-xs tabular-nums text-slate-300">{formatTotalTime(totalDurationSeconds)}</span></>
+            )}
           </div>
         </div>
       </div>

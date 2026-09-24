@@ -53,6 +53,15 @@ class FakeTtsModel:
         return [np.sin(samples * 0.05) * 0.5], 24000
 
 
+class FakeVoiceDesignModel:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def generate_voice_design(self, text, language, instruct):
+        self.calls.append({"text": text, "language": language, "instruct": instruct})
+        return [np.zeros(2400, dtype=np.float32)], 24000
+
+
 class FakeAsrProcessor:
     def __init__(self):
         self.speech_len = -1
@@ -108,6 +117,27 @@ def tts_payload() -> dict:
 
 def asr_payload() -> dict:
     return {"model": FakeAsrModel(), "processor": FakeAsrProcessor(), "device": "cpu", "dtype": "float32"}
+
+
+def test_voice_design_uses_its_own_model_and_outputs_wav(monkeypatch):
+    design = worker.EngineState(id="voice_design")
+    model = FakeVoiceDesignModel()
+    monkeypatch.setattr(worker, "_VOICE_DESIGN", design)
+    monkeypatch.setitem(worker._BUILDERS, "voice_design", lambda: {"model": model, "device": "cpu", "checkpoint": "fake-voice-design"})
+
+    request = {"text": "统一参考文本", "instruct": "专业可信、自然克制", "language": "Chinese"}
+    cold = client.post("/tts/voice-design", json=request)
+    assert cold.status_code == 503
+    assert cold.json()["detail"]["engine"] == "voice_design"
+
+    warmup = client.post("/warmup/voice-design")
+    assert warmup.status_code == 202
+    wait_for_state(design, "ready")
+    result = client.post("/tts/voice-design", json=request)
+    assert result.status_code == 200
+    assert result.content[:4] == b"RIFF"
+    assert model.calls == [request]
+    assert client.get("/health").json()["engines"]["voice_design"]["state"] == "ready"
 
 
 class GatedBuilder:

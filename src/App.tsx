@@ -18,6 +18,10 @@ import { SubtitleExportModal } from './components/SubtitleExportModal';
 import { ProjectBackupModal } from './components/ProjectBackupModal';
 import { VoiceModelConfigModal } from './components/VoiceModelConfigModal';
 import { GlobalPlayer } from './components/GlobalPlayer';
+import { VoiceIdentitiesView } from './components/VoiceIdentitiesView';
+import { VoiceIdentityCreateView, type VoiceSource } from './components/VoiceIdentityCreateView';
+import { VoiceIdentityWorkbenchEntry } from './components/VoiceIdentityWorkbenchEntry';
+import { VoiceIdentityDesignView } from './components/VoiceIdentityDesignView';
 
 import { AudioItem, AudioFolder } from './types/audio';
 import { 
@@ -38,8 +42,77 @@ import { getAudioContext } from './utils/audioEngine';
 export default function App() {
   const [items, setItems] = useState<AudioItem[]>([]);
   const [folders, setFolders] = useState<AudioFolder[]>([]);
-  const [currentTab, setCurrentTab] = useState<StudioTab>('library');
+  const [currentTab, setCurrentTab] = useState<StudioTab>(() => window.location.pathname.startsWith('/voice-identities') ? 'voice-identities' : 'library');
+  const [voiceCreateOpen, setVoiceCreateOpen] = useState(() => window.location.pathname === '/voice-identities/new');
+  const [voiceWorkbenchId, setVoiceWorkbenchId] = useState<string | null>(() => window.location.pathname.match(/^\/voice-identities\/([^/]+)\/(?:source|workbench)$/)?.[1] || null);
+  const [voiceDesignId, setVoiceDesignId] = useState<string | null>(() => window.location.pathname.match(/^\/voice-identities\/([^/]+)\/design$/)?.[1] || null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [voiceIdentityCount, setVoiceIdentityCount] = useState(8);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentTab(window.location.pathname.startsWith('/voice-identities') ? 'voice-identities' : 'library');
+      setVoiceCreateOpen(window.location.pathname === '/voice-identities/new');
+      setVoiceWorkbenchId(window.location.pathname.match(/^\/voice-identities\/([^/]+)\/(?:source|workbench)$/)?.[1] || null);
+      setVoiceDesignId(window.location.pathname.match(/^\/voice-identities\/([^/]+)\/design$/)?.[1] || null);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const handleTabChange = (tab: StudioTab) => {
+    setCurrentTab(tab);
+    setVoiceCreateOpen(false);
+    setVoiceWorkbenchId(null);
+    setVoiceDesignId(null);
+    setSearchQuery('');
+    const path = tab === 'voice-identities' ? '/voice-identities' : '/';
+    if (window.location.pathname !== path) window.history.pushState({}, '', path);
+  };
+
+  const openVoiceCreate = () => {
+    setCurrentTab('voice-identities');
+    setVoiceCreateOpen(true);
+    setVoiceWorkbenchId(null);
+    setVoiceDesignId(null);
+    setSearchQuery('');
+    window.history.pushState({}, '', '/voice-identities/new');
+  };
+
+  const openVoiceCenter = () => {
+    setCurrentTab('voice-identities');
+    setVoiceCreateOpen(false);
+    setVoiceWorkbenchId(null);
+    setVoiceDesignId(null);
+    setSearchQuery('');
+    window.history.pushState({}, '', '/voice-identities');
+  };
+
+  const openVoiceWorkbench = (id: string, source: VoiceSource) => {
+    setCurrentTab('voice-identities');
+    setVoiceCreateOpen(false);
+    const isDesign = source === 'AI 原创设计';
+    setVoiceWorkbenchId(isDesign ? null : id);
+    setVoiceDesignId(isDesign ? id : null);
+    window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}/${isDesign ? 'design' : 'source'}`);
+  };
+
+  const openVoiceDesign = (voice: { id: string; name: string; ownerName: string; ownerType: string; source: string; language: string }) => {
+    const id = voice.id;
+    try { window.sessionStorage.setItem(`voice-studio-design-identity:${id}`, JSON.stringify(voice)); } catch { /* route still works */ }
+    setCurrentTab('voice-identities');
+    setVoiceCreateOpen(false);
+    setVoiceWorkbenchId(null);
+    setVoiceDesignId(id);
+    window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}/design`);
+  };
+
+  const reopenVoiceDraft = (id: string) => {
+    setVoiceCreateOpen(true);
+    setVoiceWorkbenchId(null);
+    setVoiceDesignId(null);
+    window.history.pushState({}, '', `/voice-identities/new?draft=${encodeURIComponent(id)}`);
+  };
 
   // Filters
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
@@ -280,7 +353,7 @@ export default function App() {
       {/* Top Navbar */}
       <Navbar
         currentTab={currentTab}
-        onTabChange={setCurrentTab}
+        onTabChange={handleTabChange}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onOpenRecorder={() => setIsRecorderOpen(true)}
@@ -289,6 +362,9 @@ export default function App() {
         onOpenProjectBackup={() => setIsProjectBackupOpen(true)}
         totalItems={items.length}
         totalDurationSeconds={totalDurationSeconds}
+        voiceIdentityCount={voiceIdentityCount}
+        isCreatingVoiceIdentity={voiceCreateOpen}
+        voiceModuleHint={voiceDesignId ? '声音设计草稿' : voiceWorkbenchId ? '声音来源草稿' : undefined}
       />
 
       {/* Main Workspace Body */}
@@ -318,6 +394,25 @@ export default function App() {
 
         {/* Dynamic Studio Views */}
         <main className="flex-1 flex min-w-0 overflow-hidden">
+          {currentTab === 'voice-identities' && voiceCreateOpen && (
+            <VoiceIdentityCreateView onCancel={openVoiceCenter} onContinue={openVoiceWorkbench} />
+          )}
+          {currentTab === 'voice-identities' && voiceWorkbenchId && !voiceCreateOpen && (
+            <VoiceIdentityWorkbenchEntry id={voiceWorkbenchId} onBack={() => reopenVoiceDraft(voiceWorkbenchId)} onCenter={openVoiceCenter} />
+          )}
+          {currentTab === 'voice-identities' && voiceDesignId && !voiceCreateOpen && (
+            <VoiceIdentityDesignView id={voiceDesignId} onCenter={openVoiceCenter} onOverview={voiceDesignId.startsWith('new-') ? () => reopenVoiceDraft(voiceDesignId) : openVoiceCenter} />
+          )}
+          {currentTab === 'voice-identities' && !voiceCreateOpen && !voiceWorkbenchId && !voiceDesignId && (
+            <VoiceIdentitiesView
+              globalSearch={searchQuery}
+              onCountChange={setVoiceIdentityCount}
+              onUseForGeneration={() => handleTabChange('tts')}
+              onCreate={openVoiceCreate}
+              onOpenDesign={openVoiceDesign}
+              onOpenSource={(voice) => openVoiceWorkbench(voice.id, voice.source === '预置音色' ? 'Provider 预置音色' : voice.source)}
+            />
+          )}
           {currentTab === 'library' && (
             <AudioLibraryView
               items={filteredItems}
@@ -376,13 +471,13 @@ export default function App() {
       </div>
 
       {/* Global Persistent Bottom Audio Player Bar */}
-      <GlobalPlayer
+      {currentTab !== 'voice-identities' && <GlobalPlayer
         item={activeItem}
         isPlaying={isPlaying}
         onTogglePlay={handleToggleGlobalPlay}
         onClose={handleCloseGlobalPlayer}
         onOpenEditor={(item) => setEditingItem(item)}
-      />
+      />}
 
       {/* Audio Editor Modal */}
       {editingItem && (

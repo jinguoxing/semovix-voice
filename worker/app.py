@@ -2,8 +2,9 @@
 """
 Semovix Voice Studio - Python FastAPI Worker（硬性约束 #14）
 
-独立进程承载两个本地引擎，Node 后端只与本 Worker 通信：
+独立进程承载本地引擎，Node 后端只与本 Worker 通信：
   - Qwen3-TTS (Qwen3-TTS-12Hz-1.7B-CustomVoice)
+  - Qwen3-TTS (Qwen3-TTS-12Hz-1.7B-VoiceDesign)
   - Whisper   (openai/whisper-large-v3-turbo)
 
 引擎冷启动状态机（P01）：
@@ -39,6 +40,7 @@ from pydantic import BaseModel, Field
 # 本机已有权重时用 SEMOVIX_TTS_CKPT 指向本地目录，避免重复下载。
 DEFAULT_TTS_CKPT = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 TTS_CKPT = os.environ.get("SEMOVIX_TTS_CKPT", DEFAULT_TTS_CKPT)
+VOICE_DESIGN_CKPT = os.environ.get("SEMOVIX_VOICE_DESIGN_CKPT", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
 ASR_MODEL_ID = os.environ.get("SEMOVIX_ASR_MODEL", "openai/whisper-large-v3-turbo")
 
 app = FastAPI(title="Semovix Voice Worker", version="1.1.0")
@@ -73,8 +75,10 @@ class EngineState:
 
 
 _TTS = EngineState(id="qwen_tts")
+_VOICE_DESIGN = EngineState(id="voice_design")
+_VOICE_DESIGN_INFER_LOCK = threading.Lock()
 _ASR = EngineState(id="whisper_asr")
-_ENGINES: dict[str, EngineState] = {"qwen_tts": _TTS, "whisper_asr": _ASR}
+_ENGINES: dict[str, EngineState] = {"qwen_tts": _TTS, "voice_design": _VOICE_DESIGN, "whisper_asr": _ASR}
 
 
 def _pick_device() -> str:
@@ -105,6 +109,19 @@ def _build_tts() -> dict[str, Any]:
     }
 
 
+def _build_voice_design() -> dict[str, Any]:
+    """VoiceDesign 单独加载；绝不复用 CustomVoice 权重或 speaker 命名空间。"""
+    import torch
+    from qwen_tts import Qwen3TTSModel
+
+    device = _pick_device()
+    dtype = torch.bfloat16 if device == "mps" else torch.float32
+    model = Qwen3TTSModel.from_pretrained(
+        VOICE_DESIGN_CKPT, device_map=device, dtype=dtype, attn_implementation=None
+    )
+    return {"model": model, "device": device, "checkpoint": VOICE_DESIGN_CKPT}
+
+
 def _build_asr() -> dict[str, Any]:
     """真实加载 Whisper（测试通过替换 _BUILDERS 注入伪模型）"""
     import torch
@@ -117,7 +134,7 @@ def _build_asr() -> dict[str, Any]:
     return {"model": model, "processor": processor, "device": device, "dtype": dtype}
 
 
-_BUILDERS: dict[str, Callable[[], dict[str, Any]]] = {"qwen_tts": _build_tts, "whisper_asr": _build_asr}
+_BUILDERS: dict[str, Callable[[], dict[str, Any]]] = {"qwen_tts": _build_tts, "voice_design": _build_voice_design, "whisper_asr": _build_asr}
 
 
 def _load_engine(es: EngineState) -> None:
@@ -167,7 +184,7 @@ def _snapshot(es: EngineState) -> dict[str, Any]:
     }
 
 
-_WARMUP_PATH = {"qwen_tts": "qwen", "whisper_asr": "whisper"}
+_WARMUP_PATH = {"qwen_tts": "qwen", "voice_design": "voice-design", "whisper_asr": "whisper"}
 
 
 def _require_ready(es: EngineState) -> None:
@@ -196,6 +213,13 @@ class TtsRequest(BaseModel):
     speaker: str = Field(min_length=1)
     language: str = "Auto"
     instruct: Optional[str] = None
+
+
+class VoiceDesignRequest(BaseModel):
+    text: str = Field(min_length=1)
+    instruct: str = Field(min_length=1)
+    language: str = "Chinese"
+    seed: Optional[int] = None
 
 
 def _float_to_wav_bytes(wav: Any, sample_rate: int) -> bytes:
@@ -260,6 +284,26 @@ def tts_qwen(req: TtsRequest) -> Response:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail={"error": f"{type(e).__name__}: {e}", "code": "tts_failed", "engine": "qwen_tts"})
 
+    return Response(content=_float_to_wav_bytes(wavs[0], sr), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
+
+
+@app.post("/tts/voice-design")
+def tts_voice_design(req: VoiceDesignRequest) -> Response:
+    _require_ready(_VOICE_DESIGN)
+    if req.language not in ("Chinese", "English", "Auto"):
+        raise HTTPException(status_code=400, detail={"error": f"不支持的语言: {req.language}", "code": "unsupported_language", "engine": "voice_design"})
+    try:
+        with _VOICE_DESIGN_INFER_LOCK:
+            if req.seed is not None:
+                import torch
+                torch.manual_seed(req.seed)
+            wavs, sr = _VOICE_DESIGN.model.generate_voice_design(
+                text=req.text.strip(), language=req.language, instruct=req.instruct.strip()
+            )
+        if not wavs:
+            raise RuntimeError("模型未返回音频")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail={"error": f"{type(e).__name__}: {e}", "code": "voice_design_failed", "engine": "voice_design"})
     return Response(content=_float_to_wav_bytes(wavs[0], sr), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
 
 
@@ -334,6 +378,7 @@ def health() -> JSONResponse:
             "ok": True,
             "engines": {
                 "qwen_tts": {**_snapshot(_TTS), "checkpoint": _TTS.checkpoint or TTS_CKPT},
+                "voice_design": {**_snapshot(_VOICE_DESIGN), "checkpoint": _VOICE_DESIGN.checkpoint or VOICE_DESIGN_CKPT},
                 "whisper_asr": {**_snapshot(_ASR), "model": ASR_MODEL_ID},
             },
         }
@@ -362,6 +407,11 @@ def _warmup_response(es: EngineState) -> JSONResponse:
 @app.post("/warmup/qwen")
 def warmup_qwen() -> JSONResponse:
     return _warmup_response(_TTS)
+
+
+@app.post("/warmup/voice-design")
+def warmup_voice_design() -> JSONResponse:
+    return _warmup_response(_VOICE_DESIGN)
 
 
 @app.post("/warmup/whisper")

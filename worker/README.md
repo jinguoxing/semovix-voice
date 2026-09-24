@@ -1,11 +1,12 @@
 # Semovix Voice Worker（Python FastAPI）
 
 独立 Python 进程承载本地引擎，Node 后端（Express）只与本 Worker 通信（硬性约束 #14）。
-两个引擎在同一进程内**懒加载**：进程秒起，预热/首次调用对应端点时才加载模型。
+三个引擎在同一进程内**独立懒加载**：进程秒起，显式预热对应端点时才加载模型。
 
 | 引擎 | 模型 | 设备 |
 |---|---|---|
 | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`（HF repo id 或本地目录） | MPS / CUDA / CPU 自动选择 |
+| Qwen3-TTS VoiceDesign | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`（HF repo id 或本地目录） | MPS / CUDA / CPU 自动选择 |
 | Whisper | `openai/whisper-large-v3-turbo` | MPS / CUDA / CPU 自动选择 |
 
 ## 环境体检
@@ -43,9 +44,11 @@ Node 侧默认连接 `http://127.0.0.1:8800`，可用 `SEMOVIX_WORKER_URL` 覆�
 |---|---|---|
 | GET | `/health` | 引擎冷启动状态 `{state: cold\|loading\|ready\|error}`（永不触发加载） |
 | POST | `/warmup/qwen` | 显式预热 TTS：ready→200；cold/loading→202 {retry}；error→503 {retry} 并自动重载 |
+| POST | `/warmup/voice-design` | 独立预热 VoiceDesign；不会复用 CustomVoice 权重 |
 | POST | `/warmup/whisper` | 同上（ASR） |
 | GET | `/voices` | **Qwen 官方 speaker 精确 ID**（模型运行时 `get_supported_speakers()`，如 `uncle_fu`；硬性约束 #6）；未就绪 → 503 engine_not_ready |
 | POST | `/tts/qwen` | `{"text","speaker","language"?,"instruct"?}` → `audio/wav` 字节流（非 Base64；硬性约束 #7） |
+| POST | `/tts/voice-design` | `{"text","instruct","language"?,"seed"?}` → `audio/wav` 字节流；仅使用 VoiceDesign 模型 |
 | POST | `/asr/whisper` | multipart `file` + `language=auto|zh|en` → `{"transcript","language","duration"}` |
 
 错误结构统一为 `{"detail": {"error", "code", "engine", ...}}`：
@@ -57,6 +60,7 @@ Node 侧默认连接 `http://127.0.0.1:8800`，可用 `SEMOVIX_WORKER_URL` 覆�
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `SEMOVIX_TTS_CKPT` | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | Qwen3-TTS checkpoint（HF repo id 或本地目录） |
+| `SEMOVIX_VOICE_DESIGN_CKPT` | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | VoiceDesign checkpoint（HF repo id 或本地目录） |
 | `SEMOVIX_ASR_MODEL` | `openai/whisper-large-v3-turbo` | Whisper 模型 |
 | `SEMOVIX_WORKER_URL` | `http://127.0.0.1:8800` | Node 侧连接地址（server/config.ts） |
 | `SEMOVIX_WORKER_PORT` | `8800` | Worker 监听端口（启动器读取） |

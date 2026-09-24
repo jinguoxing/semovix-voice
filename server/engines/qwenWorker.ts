@@ -11,7 +11,7 @@ import { EngineValidationError } from './errors';
 
 /* ---------------- 冷启动状态机（P01） ---------------- */
 
-export type WorkerEngineId = 'qwen_tts' | 'whisper_asr';
+export type WorkerEngineId = 'qwen_tts' | 'voice_design' | 'whisper_asr';
 export type WorkerEngineState = 'cold' | 'loading' | 'ready' | 'error';
 
 export interface WorkerEngineSnapshot {
@@ -23,12 +23,13 @@ export interface WorkerEngineSnapshot {
 export interface WorkerStatus {
   reachable: boolean;
   qwen_tts: WorkerEngineSnapshot;
+  voice_design: WorkerEngineSnapshot;
   whisper_asr: WorkerEngineSnapshot;
 }
 
 function unreachable(): WorkerStatus {
   const cold: WorkerEngineSnapshot = { state: 'cold', available: false, error: null };
-  return { reachable: false, qwen_tts: { ...cold }, whisper_asr: { ...cold } };
+  return { reachable: false, qwen_tts: { ...cold }, voice_design: { ...cold }, whisper_asr: { ...cold } };
 }
 
 /** 兼容旧 Worker 健康载荷（无 state 字段时按 available 推断），升级窗口期内不至于误判 */
@@ -53,7 +54,7 @@ export async function getWorkerStatus(): Promise<WorkerStatus> {
       const state = normalizeEngineState(raw?.state, raw?.available);
       return { state, available: state === 'ready', error: raw?.error ?? null };
     };
-    return { reachable: true, qwen_tts: snap('qwen_tts'), whisper_asr: snap('whisper_asr') };
+    return { reachable: true, qwen_tts: snap('qwen_tts'), voice_design: snap('voice_design'), whisper_asr: snap('whisper_asr') };
   } catch {
     return unreachable();
   }
@@ -65,7 +66,7 @@ export interface WarmupResult {
 }
 
 /** Worker 预热路由段（引擎 ID ≠ 路由名：qwen_tts → /warmup/qwen，whisper_asr → /warmup/whisper） */
-const WARMUP_PATH: Record<WorkerEngineId, string> = { qwen_tts: 'qwen', whisper_asr: 'whisper' };
+const WARMUP_PATH: Record<WorkerEngineId, string> = { qwen_tts: 'qwen', voice_design: 'voice-design', whisper_asr: 'whisper' };
 
 /**
  * 显式预热（POST /warmup/{qwen|whisper}）：cold → 触发加载；loading → 幂等；
@@ -254,6 +255,23 @@ export async function qwenWorkerSynthesize(req: {
     signal: AbortSignal.timeout(300_000),
   });
   if (!res.ok) throw await workerError(res, `Qwen Worker 合成失败 (HTTP ${res.status})。请确认 worker/ 已启动（双击「启动Worker.command」）。`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** VoiceDesign 使用独立 checkpoint，按自然语言指令合成一条候选。 */
+export async function qwenWorkerVoiceDesign(req: {
+  text: string;
+  instruct: string;
+  language: 'Chinese' | 'English' | 'Auto';
+  seed: number;
+}): Promise<Buffer> {
+  const res = await fetch(`${workerUrl()}/tts/voice-design`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+    signal: AbortSignal.timeout(600_000),
+  });
+  if (!res.ok) throw await workerError(res, `VoiceDesign Worker 合成失败 (HTTP ${res.status})`);
   return Buffer.from(await res.arrayBuffer());
 }
 
