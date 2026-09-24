@@ -40,45 +40,30 @@ export const AudioTranscribeModal: React.FC<AudioTranscribeModalProps> = ({
     setIsTranscribing(true);
     setError(null);
     try {
-      // Fetch audio base64
       const response = await fetch(item.audioUrl);
+      if (!response.ok) throw new Error(`音频读取失败（HTTP ${response.status}）`);
       const blob = await response.blob();
-      const reader = new FileReader();
 
-      reader.onloadend = async () => {
-        const base64Data = (reader.result as string).split(',')[1];
-        try {
-          const res = await fetch('/api/transcribe-audio', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              audioBase64: base64Data,
-              mimeType: blob.type || 'audio/wav',
-              transcribeModel: modelConfig.transcribeModel || 'gemini-2.5-flash',
-            }),
-          });
-          const data = await res.json();
-          if (res.ok && data.success && data.transcript) {
-            setTranscript(data.transcript);
-            setSummary(data.summary || '');
-            setMood(data.mood || '清晰自然');
-            setSuggestedTags(data.tags || ['人声', '清晰']);
-          } else {
-            // 引擎不可用/失败：如实展示服务端错误，不落任何模拟文字稿
-            setError(data.error || `转录失败（HTTP ${res.status}${data.code ? ` · ${data.code}` : ''}）。`);
-          }
-        } catch (e: any) {
-          console.error('Transcription request failed:', e);
-          setError(`转录请求失败：${e?.message || '网络错误'}。请确认引擎服务已启动。`);
-        } finally {
-          setIsTranscribing(false);
-        }
-      };
+      // P4：multipart 文件上传（硬性约束 #7：大音频不得 JSON Base64 传输）
+      const form = new FormData();
+      form.append('audio', blob, `${item.id}.${item.format || 'wav'}`);
+      form.append('transcribeModel', modelConfig.transcribeModel || 'gemini-2.5-flash');
 
-      reader.readAsDataURL(blob);
-    } catch (err: any) {
-      console.error('Audio fetch failed:', err);
-      setError(`音频读取失败：${err?.message || '网络错误'}。`);
+      const res = await fetch('/api/transcribe-audio', { method: 'POST', body: form });
+      const data = await res.json();
+      if (res.ok && data.success && data.transcript) {
+        setTranscript(data.transcript);
+        setSummary(data.summary || '');
+        setMood(data.mood || '清晰自然');
+        setSuggestedTags(data.tags || ['人声', '清晰']);
+      } else {
+        // 引擎不可用/失败：如实展示服务端错误，不落任何模拟文字稿
+        setError(data.error || `转录失败（HTTP ${res.status}${data.code ? ` · ${data.code}` : ''}）。`);
+      }
+    } catch (e: any) {
+      console.error('Transcription request failed:', e);
+      setError(`转录请求失败：${e?.message || '网络错误'}。请确认引擎服务已启动。`);
+    } finally {
       setIsTranscribing(false);
     }
   };
@@ -138,7 +123,7 @@ export const AudioTranscribeModal: React.FC<AudioTranscribeModalProps> = ({
             <p className="text-sm font-semibold text-rose-200">转录失败</p>
             <p className="text-xs text-neutral-400 max-w-sm mx-auto break-words">{error}</p>
             <p className="text-[11px] text-neutral-500">
-              提示：本地转录需先启动 Whisper-ASR「启动网页版.command」；云端转录需在配置中填写 Gemini API key。
+              提示：本地转录需先启动 Python FastAPI Worker（worker/「启动Worker.command」）；云端转录需在配置中填写 Gemini API key。
             </p>
             <button
               onClick={handleTranscribe}

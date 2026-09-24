@@ -28,15 +28,6 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function blobToBase64(blob: Blob): Promise<string> {
-  const buf = new Uint8Array(await blob.arrayBuffer());
-  let binary = '';
-  const CHUNK = 0x8000; // 32KB，避免 apply 栈溢出
-  for (let i = 0; i < buf.length; i += CHUNK) {
-    binary += String.fromCharCode(...buf.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
-}
 
 /** 解码音频并计算真实波形峰值（0-1） */
 export async function extractPeaks(blob: Blob, count = 48): Promise<number[]> {
@@ -67,22 +58,28 @@ export async function extractPeaks(blob: Blob, count = 48): Promise<number[]> {
 
 /* ---------------- Items ---------------- */
 
-/** 上传素材：data: URL 或 Blob → 服务端文件；返回带服务端 audioUrl 的素材 */
+/**
+ * 上传素材：data: URL 或 Blob → 服务端文件；返回带服务端 audioUrl 的素材。
+ * P4 起走 multipart/form-data（硬性约束 #7：大音频不得 JSON Base64 传输）。
+ */
 export async function addAudioItem(item: AudioItem, blob?: Blob): Promise<AudioItem> {
-  let audioBase64: string | undefined;
   let payloadBlob = blob;
-
   if (!payloadBlob && item.audioUrl?.startsWith('data:')) {
     payloadBlob = await (await fetch(item.audioUrl)).blob();
   }
+
+  const form = new FormData();
+  form.append('item', JSON.stringify(item));
   if (payloadBlob) {
-    audioBase64 = await blobToBase64(payloadBlob);
+    form.append('audio', payloadBlob, `${item.id}.${item.format || 'wav'}`);
   }
 
-  const { item: saved } = await api<{ item: AudioItem }>('/items', {
-    method: 'POST',
-    body: JSON.stringify({ item, audioBase64 }),
-  });
+  const res = await fetch('/api/library/items', { method: 'POST', body: form });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Library API /items 失败 (HTTP ${res.status}) ${detail.slice(0, 120)}`);
+  }
+  const { item: saved } = await res.json() as { item: AudioItem };
   return saved;
 }
 

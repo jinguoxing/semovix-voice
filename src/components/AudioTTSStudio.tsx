@@ -186,7 +186,7 @@ export const AudioTTSStudio: React.FC<AudioTTSStudioProps> = ({
         return;
       }
 
-      // Convert audioUrl (data url) to Blob
+      // audioUrl 现为 /api/artifacts/:id（P4 起不再回传 data: Base64，硬性约束 #7）
       const res = await fetch(data.audioUrl);
       const blob = await res.blob();
 
