@@ -205,9 +205,33 @@ export async function restoreFolders(folders: AudioFolder[]): Promise<AudioFolde
 
 /* ---------------- 一次性迁移：localStorage/IndexedDB → 服务端 ---------------- */
 
+/** 迁移失败阶段（P01 数据完整性：任何阶段的失败都阻断旧数据清理） */
+export type LegacyMigrationStage =
+  | 'folders-parse'    // 旧文件夹 JSON 损坏
+  | 'folders-upload'   // /folders/replace 上传失败
+  | 'item-read'        // 旧素材元数据损坏 / IndexedDB 不可用 / 音频数据缺失
+  | 'item-upload'      // 单条素材上传服务端失败
+  | 'verify'           // 服务端复验：素材缺失或文件夹数量减少
+  | 'idb'              // 旧 IndexedDB 库删除失败/被阻塞
+  | 'unexpected';      // 未预期异常（安全网）
+
+export interface LegacyMigrationFailure {
+  stage: LegacyMigrationStage;
+  /** 涉及的素材/文件夹 ID（如有） */
+  id?: string;
+  error: string;
+}
+
+export interface LegacyMigrationResult {
+  /** true = 全部迁移成功（或本无旧数据）且旧数据已清理 */
+  migrated: boolean;
+  migratedItems: number;
+  failures: LegacyMigrationFailure[];
+}
+
 function legacyOpenDB(): Promise<IDBDatabase | null> {
   return new Promise(resolve => {
-    if (!('indexedDB' in window)) return resolve(null);
+    if (typeof indexedDB === 'undefined' || !indexedDB?.open) return resolve(null);
     const request = indexedDB.open(LEGACY_DB_NAME);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => resolve(null);
@@ -224,40 +248,73 @@ function legacyGetBlob(db: IDBDatabase, id: string): Promise<Blob | null> {
 }
 
 /**
- * 一次性迁移：localStorage/IndexedDB → 服务端。
- * P01 数据完整性：仅在「全部素材迁移成功」时才清理旧数据；
- * 任何一条失败都保留旧数据下次重试（addAudioItem 为 upsert，重跑幂等）。
- * 导出供单元测试覆盖“部分失败”场景。
+ * 删除旧 IndexedDB 库（Promise 化，含 onblocked）：
+ * 有旧标签页占用连接时 onblocked 触发 → 返回 false，不设迁移标记，下次重试。
  */
-export async function migrateLegacyDataIfNeeded(): Promise<void> {
-  if (localStorage.getItem(MIGRATION_FLAG)) return;
+function deleteLegacyDatabase(): Promise<boolean> {
+  return new Promise(resolve => {
+    if (typeof indexedDB === 'undefined' || !indexedDB?.deleteDatabase) return resolve(true);
+    try {
+      // IDBOpenDBRequest 的 onblocked 事件签名与库版本冲突，此处按赋值回调使用（宽松类型）
+      const req = indexedDB.deleteDatabase(LEGACY_DB_NAME) as any;
+      if (!req || !('onsuccess' in req)) return resolve(true); // 非标准实现（测试桩等）：视为已删除
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => resolve(false);
+      req.onblocked = () => resolve(false);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * 一次性迁移：localStorage/IndexedDB → 服务端（P01 事务化）。
+ *
+ * 阶段：folders-parse → folders-upload → item-read → item-upload → verify → 清理。
+ * - 服务端复验：GET /items + /folders，所有旧素材 ID 必须存在、文件夹数量不得减少；
+ * - 仅当 failures.length === 0 才清理（localStorage → IndexedDB → 迁移标记）；
+ * - 任何失败保留旧数据与未设置标记，下次加载重试（addAudioItem 为 upsert，幂等）。
+ */
+export async function migrateLegacyDataIfNeeded(): Promise<LegacyMigrationResult> {
+  if (localStorage.getItem(MIGRATION_FLAG)) {
+    return { migrated: true, migratedItems: 0, failures: [] };
+  }
+
+  const failures: LegacyMigrationFailure[] = [];
+  let migratedItems = 0;
 
   try {
     const rawItems = localStorage.getItem(LEGACY_KEY_ITEMS);
     const rawFolders = localStorage.getItem(LEGACY_KEY_FOLDERS);
 
     // 1) 文件夹：整表搬到服务端（服务端空库会播种默认文件夹，这里覆盖为用户实际有的）
+    let folders: AudioFolder[] = [];
     if (rawFolders) {
       try {
-        const folders: AudioFolder[] = JSON.parse(rawFolders);
-        if (Array.isArray(folders) && folders.length) {
+        const parsed = JSON.parse(rawFolders);
+        if (Array.isArray(parsed)) folders = parsed;
+        else failures.push({ stage: 'folders-parse', error: '旧文件夹数据不是数组' });
+      } catch (e) {
+        failures.push({ stage: 'folders-parse', error: `旧文件夹 JSON 损坏: ${(e as Error)?.message || e}` });
+      }
+      if (folders.length) {
+        try {
           await api('/folders/replace', { method: 'POST', body: JSON.stringify({ folders }) });
+        } catch (e) {
+          failures.push({ stage: 'folders-upload', error: `文件夹上传服务端失败: ${(e as Error)?.message || e}` });
         }
-      } catch { /* 损坏的旧数据直接丢弃 */ }
+      }
     }
 
     // 2) 素材：meta + IndexedDB blob / data: URL → 服务端文件
-    //    解析损坏/IDB 不可用/单条失败都计入 failedCount——任何失败都不得清理旧数据（P01）
-    let migratedCount = 0;
-    let failedCount = 0;
+    let items: AudioItem[] = [];
     if (rawItems) {
-      let items: AudioItem[] = [];
       try {
         const parsed = JSON.parse(rawItems);
         if (Array.isArray(parsed)) items = parsed;
+        else failures.push({ stage: 'item-read', error: '旧素材元数据不是数组' });
       } catch (e) {
-        console.warn('旧素材元数据损坏，保留原数据不迁移', e);
-        failedCount++;
+        failures.push({ stage: 'item-read', error: `旧素材元数据 JSON 损坏: ${(e as Error)?.message || e}` });
       }
 
       let db: IDBDatabase | null = null;
@@ -276,41 +333,64 @@ export async function migrateLegacyDataIfNeeded(): Promise<void> {
             blob = await legacyGetBlob(db, item.id);
           }
           if (!blob) {
-            console.warn(`迁移跳过 ${item.id}：找不到音频数据`);
-            failedCount++;
+            failures.push({ stage: 'item-read', id: item.id, error: '找不到音频数据（无 data: URL 且 IndexedDB 无此 blob）' });
             continue;
           }
-          await addAudioItem(
-            { ...item, audioUrl: '' },
-            blob,
-          );
-          migratedCount++;
+          await addAudioItem({ ...item, audioUrl: '' }, blob);
+          migratedItems++;
         } catch (e) {
-          console.warn(`迁移素材 ${item.id} 失败，跳过`, e);
-          failedCount++;
+          failures.push({ stage: 'item-upload', id: item.id, error: `上传服务端失败: ${(e as Error)?.message || e}` });
         }
       }
       db?.close();
     }
 
-    if (migratedCount > 0) {
-      console.log(`[迁移] ${migratedCount} 条旧素材已搬入服务端素材库`);
+    if (migratedItems > 0) {
+      console.log(`[迁移] ${migratedItems} 条旧素材已搬入服务端素材库`);
     }
 
-    // 3) 只有零失败才清理旧数据；部分失败时原样保留，下次加载重试（P01 数据完整性）
-    if (failedCount > 0) {
-      console.warn(`[迁移] ${failedCount} 条素材迁移失败，保留旧 localStorage/IndexedDB 数据以便重试`);
-      return;
+    // 3) 服务端复验（存在旧数据时）：所有旧素材 ID 都在服务端；文件夹数量没有减少
+    if ((items.length > 0 || folders.length > 0) && failures.length === 0) {
+      try {
+        const [{ items: serverItems }, { folders: serverFolders }] = await Promise.all([
+          api<{ items: AudioItem[] }>('/items'),
+          api<{ folders: AudioFolder[] }>('/folders'),
+        ]);
+        const serverIds = new Set(serverItems.map(i => i.id));
+        for (const item of items) {
+          if (!serverIds.has(item.id)) {
+            failures.push({ stage: 'verify', id: item.id, error: '服务端复验时该素材缺失' });
+          }
+        }
+        if (folders.length && serverFolders.length < folders.length) {
+          failures.push({
+            stage: 'verify',
+            error: `服务端文件夹数量减少（旧 ${folders.length} → 服务端 ${serverFolders.length}）`,
+          });
+        }
+      } catch (e) {
+        failures.push({ stage: 'verify', error: `服务端复验请求失败: ${(e as Error)?.message || e}` });
+      }
+    }
+
+    // 4) 仅零失败才清理：localStorage → IndexedDB（Promise 化，onblocked 不算成功）→ 迁移标记
+    if (failures.length > 0) {
+      console.warn('[迁移] 存在失败项，保留旧 localStorage/IndexedDB 数据以便重试:', failures);
+      return { migrated: false, migratedItems, failures };
     }
 
     localStorage.removeItem(LEGACY_KEY_ITEMS);
     localStorage.removeItem(LEGACY_KEY_FOLDERS);
-    if ('indexedDB' in window) {
-      indexedDB.deleteDatabase(LEGACY_DB_NAME);
+    if (!(await deleteLegacyDatabase())) {
+      failures.push({ stage: 'idb', error: '旧 IndexedDB 库删除失败或被其他标签页阻塞' });
+      return { migrated: false, migratedItems, failures };
     }
     localStorage.setItem(MIGRATION_FLAG, new Date().toISOString());
+    return { migrated: true, migratedItems, failures: [] };
   } catch (e) {
+    failures.push({ stage: 'unexpected', error: `迁移意外中止: ${(e as Error)?.message || e}` });
     console.warn('旧数据迁移未完成，将在下次加载时重试', e);
+    return { migrated: false, migratedItems, failures };
   }
 }
 
