@@ -55,6 +55,33 @@ libraryRouter.patch('/library/items/:id', (req, res) => {
   res.json({ item: updated });
 });
 
+/**
+ * 覆盖素材音频文件（P01 数据完整性：编辑器“覆盖原素材”必须真正写服务端文件）。
+ * multipart/form-data：文件字段 audio；query 可带 duration/sampleRate/channels 同步元数据。
+ */
+libraryRouter.put('/library/items/:id/audio', upload.single('audio'), (req, res) => {
+  try {
+    const existing = getItem(req.params.id);
+    if (!existing) return fail(res, 404, 'Item not found.', 'not_found');
+    if (!req.file || req.file.buffer.length === 0) {
+      return fail(res, 400, 'Audio file is required (multipart/form-data, field "audio").', 'invalid_request');
+    }
+    writeItemFile(req.params.id, existing.format || 'wav', req.file.buffer);
+    const metaUpdates: Record<string, unknown> = { fileSize: req.file.buffer.length };
+    const duration = Number(req.query.duration);
+    const sampleRate = Number(req.query.sampleRate);
+    const channels = Number(req.query.channels);
+    if (Number.isFinite(duration) && duration > 0) metaUpdates.duration = duration;
+    if (Number.isFinite(sampleRate) && sampleRate > 0) metaUpdates.sampleRate = sampleRate;
+    if (Number.isFinite(channels) && channels > 0) metaUpdates.channels = channels;
+    const updated = updateItem(req.params.id, metaUpdates);
+    res.json({ item: updated, fileSize: req.file.buffer.length });
+  } catch (error: any) {
+    console.error('Library audio overwrite error:', error);
+    res.status(500).json({ error: error.message || 'Failed to overwrite audio file.' });
+  }
+});
+
 /** 删除单个素材（含磁盘文件） */
 libraryRouter.delete('/library/items/:id', (req, res) => {
   const ok = deleteItem(req.params.id);

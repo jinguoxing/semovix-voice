@@ -1,7 +1,7 @@
 /**
  * 通用 API 集成测试：引擎状态上报、TTS 参数校验（全部离线、禁网）。
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import { setupTestEnv, cleanupTestEnv, tinyWavBuffer } from './helpers';
@@ -79,14 +79,15 @@ describe('POST /api/generate-speech (validation only, no engine calls)', () => {
     expect(res.body.audioUrl).toBeUndefined(); // 硬性约束 #4：未知 ID 不得默认发给 Gemini
   });
 
-  it('fails honestly when the local engine is unreachable (502, no fabricated audio)', async () => {
+  it('returns 503 engine_unavailable when the local engine is down (pre-check, no fabricated audio)', async () => {
     const res = await request(app)
       .post('/api/generate-speech')
       .send({ text: '你好', ttsModel: 'qwen3-tts-local' })
-      .expect(502);
-    expect(res.body.code).toBe('tts_engine_failed');
+      .expect(503);
+    expect(res.body.code).toBe('engine_unavailable');
     expect(res.body.engine).toBe('qwen3-tts-local');
     expect(res.body.audioUrl).toBeUndefined(); // 硬性约束 #2：引擎不可用时不得生成假音频
+    expect(res.body.generationId).toBeUndefined(); // 未发起引擎调用，不留失败痕
   });
 });
 
@@ -133,24 +134,47 @@ describe('POST /api/transcribe-audio (honest failure, no simulated transcripts)'
 });
 
 describe('GET /api/generations (traceability ledger, migration 0002)', () => {
-  it('lists engine failures with their真实 error and no output file', async () => {
-    const failed = await request(app)
-      .post('/api/generate-speech')
-      .send({ text: '留痕验证', ttsModel: 'qwen3-tts-local' })
-      .expect(502);
-    const genId = failed.body.generationId as string;
-    expect(genId).toMatch(/^tts-/);
+  it('records a failed engine call (health OK, synth 500) with real error and no output file', async () => {
+    // 受控桩：/health 与 /voices 可用（通过 503 预检），/tts/qwen 返回 500 → 真实调用失败留痕
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async (input: any) => {
+      const url = String(input);
+      if (url.endsWith('/health')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          engines: {
+            qwen_tts: { available: true, loading: false, error: null, checkpoint: 'test-ckpt' },
+            whisper_asr: { available: true, loading: false, error: null, model: 'whisper-test' },
+          },
+        }), { status: 200 });
+      }
+      if (url.endsWith('/voices')) {
+        return new Response(JSON.stringify({ speakers: ['uncle_fu', 'vivian'], languages: ['zh', 'en'] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ detail: { error: 'gpu oom during synthesis', code: 'tts_failed' } }), { status: 500 });
+    }));
+    try {
+      const failed = await request(app)
+        .post('/api/generate-speech')
+        .send({ text: '留痕验证', voiceName: 'uncle_fu', ttsModel: 'qwen3-tts-local' })
+        .expect(502);
+      expect(failed.body.code).toBe('tts_engine_failed');
+      const genId = failed.body.generationId as string;
+      expect(genId).toMatch(/^tts-/);
 
-    const res = await request(app).get('/api/generations?limit=10').expect(200);
-    const rows = res.body.generations as Array<Record<string, any>>;
-    const row = rows.find(g => g.id === genId);
-    expect(row).toBeTruthy();
-    if (!row) return;
-    expect(row.kind).toBe('tts');
-    expect(row.status).toBe('failed');
-    expect(row.input_text).toBe('留痕验证');
-    expect(row.output_file).toBeNull();
-    expect(String(row.error)).toMatch(/network disabled|fetch/i);
+      const res = await request(app).get('/api/generations?limit=10').expect(200);
+      const rows = res.body.generations as Array<Record<string, any>>;
+      const row = rows.find(g => g.id === genId);
+      expect(row).toBeTruthy();
+      if (!row) return;
+      expect(row.kind).toBe('tts');
+      expect(row.status).toBe('failed');
+      expect(row.input_text).toBe('留痕验证');
+      expect(row.output_file).toBeNull();
+      expect(String(row.error)).toMatch(/gpu oom/);
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+    }
   });
 
   it('404s for unknown artifact ids', async () => {

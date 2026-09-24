@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import request from 'supertest';
 import type { Express } from 'express';
 import { setupTestEnv, cleanupTestEnv, tinyWavBuffer, tinyWavBase64 } from './helpers';
@@ -105,6 +106,41 @@ describe('GET /api/library/items & file', () => {
 });
 
 describe('PATCH & DELETE /api/library/items/:id', () => {
+  it('overwrites the server audio file via PUT (SHA-256 must change)', async () => {
+    await request(app)
+      .post('/api/library/items')
+      .field('item', JSON.stringify({ id: 'it-ow-1', title: '待覆盖', format: 'wav', sampleRate: 24000 }))
+      .attach('audio', tinyWavBuffer(24000), { filename: 'a.wav', contentType: 'audio/wav' });
+
+    const file = path.join(libraryDir, 'files', 'it-ow-1.wav');
+    const before = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+    const res = await request(app)
+      .put('/api/library/items/it-ow-1/audio?duration=0.02&sampleRate=48000&channels=1')
+      .attach('audio', tinyWavBuffer(48000, 480), { filename: 'b.wav', contentType: 'audio/wav' })
+      .expect(200);
+
+    const after = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    expect(after).not.toBe(before); // 验收：覆盖后文件内容必须真实变化
+    expect(res.body.item.fileSize).toBe(tinyWavBuffer(48000, 480).length);
+    expect(res.body.item.sampleRate).toBe(48000);
+    expect(res.body.item.duration).toBe(0.02);
+    expect(fs.readFileSync(file).toString('ascii', 0, 4)).toBe('RIFF');
+  });
+
+  it('PUT overwrite: 404 unknown id, 400 without file', async () => {
+    await request(app)
+      .put('/api/library/items/nope/audio')
+      .attach('audio', tinyWavBuffer(), { filename: 'a.wav', contentType: 'audio/wav' })
+      .expect(404);
+    await request(app)
+      .post('/api/library/items')
+      .field('item', JSON.stringify({ id: 'it-ow-2', title: '无文件', format: 'wav' }));
+    await request(app)
+      .put('/api/library/items/it-ow-2/audio')
+      .expect(400);
+  });
+
   it('updates metadata and deletes row + file', async () => {
     await request(app)
       .post('/api/library/items')

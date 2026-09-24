@@ -57,6 +57,17 @@ generateSpeechRouter.post('/generate-speech', async (req, res) => {
       return fail(res, 400, 'Gemini API key is not configured.', 'engine_not_configured', { engine: adapter.id });
     }
 
+    // 引擎可用性预检（P01）：Worker 未启动/引擎未加载 → 明确 503，与“调用失败 502”区分
+    if (!(await adapter.isAvailable())) {
+      return fail(
+        res,
+        503,
+        `语音引擎 ${adapter.id} 当前不可用（如本地 Qwen3-TTS 需先启动 worker/「启动Worker.command」并等待模型加载）。`,
+        'engine_unavailable',
+        { engine: adapter.id }
+      );
+    }
+
     const genId = generationId();
     const inputText = String(text).slice(0, 2000);
 
