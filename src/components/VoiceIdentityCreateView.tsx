@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AudioLines, Check, ChevronRight, CircleHelp, FileInput, Headphones, Maximize2, Play, Save, UserRound, Volume2, X } from 'lucide-react';
 import { VoiceWorkspaceSidebar } from './VoiceWorkspaceSidebar';
 import './VoiceIdentityCreateView.css';
@@ -40,6 +40,7 @@ function currentSavedDraft(): SavedDraft | undefined {
   const id = new URLSearchParams(window.location.search).get('draft');
   return id ? readSavedDrafts().find(item => item.id === id) : undefined;
 }
+function requestedDraftId() { return new URLSearchParams(window.location.search).get('draft') || undefined; }
 function normalizeSource(value?: string): VoiceSource {
   if (value === '预置音色') return 'Provider 预置音色';
   return METHODS.find(item => item.id === value)?.id || 'AI 原创设计';
@@ -54,7 +55,7 @@ export function VoiceIdentityCreateView({ onCancel, onContinue }: { onCancel: ()
   const [savedDraft] = useState(currentSavedDraft);
   const [source, setSource] = useState<VoiceSource>(() => normalizeSource(savedDraft?.source));
   const [form, setForm] = useState<FormState>(() => ({ ...DEFAULT_FORM, ...savedDraft?.form }));
-  const [draftId, setDraftId] = useState<string | null>(savedDraft?.id || null);
+  const [draftId, setDraftId] = useState<string | null>(savedDraft?.id || requestedDraftId() || null);
   const [saved, setSaved] = useState(Boolean(savedDraft));
   const [createdAt, setCreatedAt] = useState(savedDraft?.createdAt);
   const [feedback, setFeedback] = useState('');
@@ -63,34 +64,55 @@ export function VoiceIdentityCreateView({ onCancel, onContinue }: { onCancel: ()
   const [volume, setVolume] = useState(80);
   const missing = [!form.roleName.trim() ? '角色名称' : '', !form.owner.trim() ? '归属对象' : '', !form.language ? '主要语言' : '', !source ? '创建方式' : ''].filter(Boolean);
 
+  useEffect(() => {
+    if (!draftId?.startsWith('voice-')) return;
+    let live = true;
+    fetch(`/api/voice-identities/${encodeURIComponent(draftId)}`)
+      .then(response => response.ok ? response.json() as Promise<{ identity: { name: string; ownerType: string; ownerName: string; source: string; language: string; description: string; visibility: Visibility; createdAt: string } }> : null)
+      .then(result => {
+        if (!live || !result?.identity) return;
+        const identity = result.identity;
+        setSource(normalizeSource(identity.source));
+        setForm({
+          ownerType: identity.ownerType, owner: identity.ownerName,
+          roleName: identity.name === '未命名声音角色' ? '' : identity.name,
+          language: identity.language === '中文' ? '中文（普通话）' : identity.language,
+          description: identity.description === '用途说明待完善。' ? '' : identity.description,
+          visibility: identity.visibility || '团队内可见',
+        });
+        setCreatedAt(identity.createdAt);
+        setSaved(true);
+      })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [draftId]);
+
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm(current => ({ ...current, [key]: value }));
     setSaved(false);
     setFeedback('');
   };
 
-  const saveDraft = (continueAfter = false) => {
+  const saveDraft = async (continueAfter = false) => {
     if (continueAfter && missing.length) { setFeedback('请先填写' + missing.join('、') + '。'); return; }
-    const id = draftId || 'new-' + Date.now();
-    const owner = form.owner.trim();
-    const roleName = form.roleName.trim();
-    const name = roleName ? (owner && !roleName.startsWith(owner) ? owner + ' ' + roleName : roleName) : '未命名声音角色';
-    const ownerGroup = form.ownerType === '产品' ? '产品' : form.ownerType === '栏目 / IP' ? '栏目 / IP' : form.ownerType === '个人' ? '个人 / 讲师' : '企业 / 品牌';
-    const record = {
-      id, name, ownerDescription: (owner || '未选择归属对象') + '的声音身份', ownerType: form.ownerType,
-      ownerName: owner || '待完善', ownerGroup, description: form.description.trim() || '用途说明待完善。',
-      source, language: form.language.startsWith('英文') ? '英文' : form.language.startsWith('中英') ? '中英双语' : '中文',
-      version: '尚未冻结', status: '草稿', license: source === '授权真人克隆' ? '待授权' : source === 'Provider 预置音色' ? 'Provider 许可' : source === '导入已有 Voice Profile' ? '待校验' : '不适用',
-      mine: true, form, createdAt: createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
-    };
     try {
-      const drafts = readSavedDrafts().filter(item => item.id !== id);
+      const payload = { roleName: form.roleName, ownerType: form.ownerType, ownerName: form.owner, language: form.language, description: form.description, visibility: form.visibility, source };
+      const serverId = draftId?.startsWith('voice-') ? draftId : undefined;
+      const response = await fetch(serverId ? `/api/voice-identities/${encodeURIComponent(serverId)}` : '/api/voice-identities', {
+        method: serverId ? 'PATCH' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      const result = await response.json() as { identity?: SavedDraft & { ownerName?: string; description?: string; language?: string; visibility?: Visibility; createdAt?: string }; error?: string };
+      if (!response.ok || !result.identity) throw new Error(result.error || '声音角色草稿保存失败。');
+      const identity = result.identity;
+      const record = { ...identity, source, form, createdAt: identity.createdAt || createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+      const drafts = readSavedDrafts().filter(item => item.id !== identity.id && !item.id.startsWith('new-'));
       window.localStorage.setItem('voice-studio-identity-drafts', JSON.stringify([record, ...drafts]));
-      window.history.replaceState({}, '', '/voice-identities/new?draft=' + encodeURIComponent(id));
-      setDraftId(id); setCreatedAt(record.createdAt); setSaved(true);
+      window.localStorage.setItem('voice-studio-identities-cache', JSON.stringify([record]));
+      window.history.replaceState({}, '', '/voice-identities/new?draft=' + encodeURIComponent(identity.id));
+      setDraftId(identity.id); setCreatedAt(record.createdAt); setSaved(true);
       setFeedback('声音角色草稿已保存。');
-      if (continueAfter) onContinue?.(id, source);
-    } catch { setFeedback('草稿保存失败，请检查浏览器存储空间。'); }
+      if (continueAfter) onContinue?.(identity.id, source);
+    } catch (error) { setFeedback(error instanceof Error ? error.message : '草稿保存失败，请检查网络连接。'); }
   };
 
   const readiness = [
@@ -105,7 +127,7 @@ export function VoiceIdentityCreateView({ onCancel, onContinue }: { onCancel: ()
     <VoiceWorkspaceSidebar active="概览" name={saved ? form.roleName.trim() : ''} owner={saved ? form.owner.trim() : ''} source={saved ? source : ''} createdAt={formatCreatedAt(createdAt)} isNew={!saved} onSource={draftId ? () => onContinue?.(draftId, source) : undefined} />
     <main className="vc-workspace"><div className="vc-content">
       <div className="vc-breadcrumb">声音角色工作台 <span>/</span> 新建状态</div>
-      <header className="vc-page-header"><div><h1>新建声音角色</h1><p>先完成最小必要定义，保存后进入对应的声音来源工作区继续设计、克隆或导入。</p></div><div className="vc-header-actions"><button type="button" onClick={onCancel}>取消</button><button type="button" onClick={() => saveDraft()}><Save size={14} />保存草稿</button><button type="button" className="vc-primary" onClick={() => saveDraft(true)}>保存并继续 <ChevronRight size={15} /></button></div></header>
+      <header className="vc-page-header"><div><h1>新建声音角色</h1><p>先完成最小必要定义，保存后进入对应的声音来源工作区继续设计、克隆或导入。</p></div><div className="vc-header-actions"><button type="button" onClick={onCancel}>取消</button><button type="button" onClick={() => void saveDraft()}><Save size={14} />保存草稿</button><button type="button" className="vc-primary" onClick={() => void saveDraft(true)}>保存并继续 <ChevronRight size={15} /></button></div></header>
       <div className="vc-info-strip"><CircleHelp size={15} /><span>声音角色用于定义“谁在说话”。创建后，可根据来源进入 AI 原创设计、授权真人克隆、预置音色选择或导入 Profile 的对应工作区。</span></div>
       {feedback && <div className="vc-feedback" role="status">{feedback}<button type="button" onClick={() => setFeedback('')} aria-label="关闭提示"><X size={14} /></button></div>}
 
@@ -128,7 +150,7 @@ export function VoiceIdentityCreateView({ onCancel, onContinue }: { onCancel: ()
       </div></div>
     </div></main>
 
-    <div className="vc-actionbar"><button type="button" onClick={onCancel}>取消</button><span role="status">{feedback}</span><div><button type="button" onClick={() => saveDraft()}>保存草稿</button><button type="button" className="vc-primary" onClick={() => saveDraft(true)}>保存并继续 <ChevronRight size={15} /></button></div></div>
+    <div className="vc-actionbar"><button type="button" onClick={onCancel}>取消</button><span role="status">{feedback}</span><div><button type="button" onClick={() => void saveDraft()}>保存草稿</button><button type="button" className="vc-primary" onClick={() => void saveDraft(true)}>保存并继续 <ChevronRight size={15} /></button></div></div>
     {playerOpen && <div className="vc-player" role="region" aria-label="全局音频播放器"><div className="vc-player-left"><span className="vc-player-icon"><AudioLines size={17} /></span><div><strong>未选择样音</strong><span>尚未选择音频</span></div></div><div className="vc-player-center"><button type="button" disabled aria-label="暂无音频可播放"><Play size={16} fill="currentColor" /></button><span>0:00</span><input type="range" min="0" max="1" value="0" disabled aria-label="播放进度" /><span>--:--</span></div><div className="vc-player-right"><Volume2 size={16} /><input type="range" min="0" max="100" value={volume} onChange={event => setVolume(Number(event.target.value))} aria-label="音量" /><button type="button" onClick={() => setPlayerExpanded(value => !value)} aria-label="展开播放器"><Maximize2 size={16} /></button><button type="button" onClick={() => setPlayerOpen(false)} aria-label="关闭播放器"><X size={17} /></button></div>{playerExpanded && <div className="vc-player-expanded">当前没有可试听的样音。</div>}</div>}
   </div>;
 }

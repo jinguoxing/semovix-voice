@@ -51,11 +51,13 @@ function currentVoiceSourceRoute(): { id: string; source: VoiceSource } | null {
   try {
     const drafts = JSON.parse(window.localStorage.getItem('voice-studio-identity-drafts') || '[]') as { id: string; source: VoiceSource }[];
     const saved = drafts.find(item => item.id === id)?.source;
+    const cached = JSON.parse(window.localStorage.getItem('voice-studio-identities-cache') || '[]') as { id: string; source: VoiceSource }[];
+    const cachedSource = cached.find(item => item.id === id)?.source;
     const selected = window.sessionStorage.getItem(`voice-studio-source-identity:${id}`) as VoiceSource | null;
     // Built-in identities provide demonstration source data when a user opens a
     // deep link before selecting a source in this browser session.
     const demoSource = id === 'xiaofei' ? '授权真人克隆' : 'AI 原创设计';
-    const source = String(saved || selected || demoSource);
+    const source = String(saved || cachedSource || selected || demoSource);
     return { id, source: source === '预置音色' ? 'Provider 预置音色' : source as VoiceSource };
   } catch { return { id, source: 'AI 原创设计' }; }
 }
@@ -96,6 +98,35 @@ export default function App() {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
+  // A direct link contains only the role ID and `section=source`. Resolve the
+  // source from the persisted identity so a clone, provider preset, or import
+  // never falls back to the AI-design workbench after a fresh browser launch.
+  useEffect(() => {
+    if (currentTab !== 'voice-identities') return;
+    const route = currentVoiceSourceRoute();
+    if (!route || !route.id.startsWith('voice-')) return;
+    let live = true;
+    fetch(`/api/voice-identities/${encodeURIComponent(route.id)}`)
+      .then(response => response.ok ? response.json() as Promise<{ identity: { source: VoiceSource } }> : null)
+      .then(result => {
+        if (!live || !result?.identity) return;
+        const source = result.identity.source;
+        try {
+          window.sessionStorage.setItem(`voice-studio-source-identity:${route.id}`, source);
+          window.localStorage.setItem('voice-studio-identities-cache', JSON.stringify([{ id: route.id, source }]));
+        } catch { /* the route is still usable without a browser cache */ }
+        if (source === 'AI 原创设计') {
+          setVoiceWorkbenchId(null);
+          setVoiceDesignId(route.id);
+        } else {
+          setVoiceDesignId(null);
+          setVoiceWorkbenchId(route.id);
+        }
+      })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [currentTab]);
 
   const handleTabChange = (tab: StudioTab) => {
     setCurrentTab(tab);

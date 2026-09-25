@@ -111,7 +111,7 @@ function readDraft(id: string, identity: Identity): DesignDraft {
 const countChinese = (text: string) => (text.match(/[\u3400-\u9fff]/g) || []).length;
 
 export function VoiceIdentityDesignView({ id, onCenter, onOverview, onReview }: { id: string; onCenter: () => void; onOverview?: () => void; onReview: (id: string, batchId: string) => void }) {
-  const [identity] = useState(() => readIdentity(id));
+  const [identity, setIdentity] = useState(() => readIdentity(id));
   const [draft, setDraft] = useState<DesignDraft>(() => readDraft(id, identity));
   const [saved, setSaved] = useState(false);
   const [message, setMessage] = useState('');
@@ -135,6 +135,28 @@ export function VoiceIdentityDesignView({ id, onCenter, onOverview, onReview }: 
     }).then(value => { if (live) setRuntime(value); }).catch(() => { if (live) setRuntime({ supported: false, reachable: false, state: 'unavailable', error: '无法连接生成服务' }); });
     return () => { live = false; };
   }, []);
+
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/voice-identities/${encodeURIComponent(id)}`)
+      .then(response => response.ok ? response.json() as Promise<{ identity: Identity }> : null)
+      .then(result => { if (live && result?.identity) setIdentity(result.identity); })
+      .catch(() => undefined);
+    fetch(`/api/voice-identities/${encodeURIComponent(id)}/source-config`)
+      .then(response => response.ok ? response.json() as Promise<{ config: { source: string; configuration: Partial<DesignDraft> & { activeBatchId?: string } } | null }> : null)
+      .then(result => {
+        if (!live || result?.config?.source !== 'AI 原创设计') return;
+        const configuration = result.config.configuration;
+        setDraft(current => ({ ...current, ...configuration }));
+        if (!configuration.activeBatchId) return;
+        fetch(`/api/voice-design/batches/${encodeURIComponent(configuration.activeBatchId)}`)
+          .then(response => response.ok ? response.json() as Promise<Batch> : null)
+          .then(value => { if (live && value) setBatch(value); })
+          .catch(() => undefined);
+      })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [id]);
 
   useEffect(() => {
     try {
@@ -173,14 +195,23 @@ export function VoiceIdentityDesignView({ id, onCenter, onOverview, onReview }: 
   const updateDirection = (directionId: string, patch: Partial<Direction>) => {
     update('directions', draft.directions.map(item => item.id === directionId ? { ...item, ...patch } : item));
   };
-  const saveDraft = () => {
+  const saveDraft = async (activeBatchId?: string) => {
     try {
+      const configuration = { ...draft, ...(activeBatchId ? { activeBatchId } : {}) };
+      const response = await fetch(`/api/voice-identities/${encodeURIComponent(id)}/source-config`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: 'AI 原创设计', configuration }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || '声音设计草稿保存失败');
       const all = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}') as Record<string, DesignDraft>;
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...all, [id]: draft }));
       setSaved(true);
       setMessage('声音设计草稿已保存');
-    } catch {
-      setMessage('草稿保存失败，请检查浏览器存储空间');
+      return true;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '草稿保存失败，请检查网络连接');
+      return false;
     }
   };
   const addForbidden = () => {
@@ -204,7 +235,7 @@ export function VoiceIdentityDesignView({ id, onCenter, onOverview, onReview }: 
       });
       const result = await response.json() as Batch & { error?: string };
       if (!response.ok) throw new Error(result.error || '声音设计批次创建失败');
-      saveDraft();
+      await saveDraft(result.id);
       setBatch(result);
       try {
         const saved = JSON.parse(window.localStorage.getItem(ACTIVE_BATCH_KEY) || '{}') as Record<string, string>;
@@ -224,7 +255,7 @@ export function VoiceIdentityDesignView({ id, onCenter, onOverview, onReview }: 
     <main className="vd-workspace">
       <div className="vd-content">
         <div className="vd-topline"><button type="button" onClick={onCenter}><ArrowLeft size={14} />返回声音角色中心</button><span>声音角色工作台 / 声音来源 / AI 原创设计</span></div>
-        <header className="vd-header"><div><div className="vd-title-row"><h1>声音来源｜AI 原创设计</h1><span className="vd-draft-badge">草稿</span></div><p>通过声音 Brief、统一参考文本和设计方向，生成可进入匿名评审的候选声音。</p></div><div className="vd-header-actions"><button type="button" className="vd-secondary" onClick={saveDraft}><Save size={15} />保存草稿</button><button type="button" className="vd-quiet" onClick={onCenter}>取消</button><button type="button" className="vd-primary" onClick={() => setConfirmOpen(true)} disabled={!formReady || Boolean(batch && !['completed', 'failed'].includes(batch.status))}><Sparkles size={16} />开始生成候选 · {totalCandidates} 条</button></div></header>
+        <header className="vd-header"><div><div className="vd-title-row"><h1>声音来源｜AI 原创设计</h1><span className="vd-draft-badge">草稿</span></div><p>通过声音 Brief、统一参考文本和设计方向，生成可进入匿名评审的候选声音。</p></div><div className="vd-header-actions"><button type="button" className="vd-secondary" onClick={() => void saveDraft()}><Save size={15} />保存草稿</button><button type="button" className="vd-quiet" onClick={onCenter}>取消</button><button type="button" className="vd-primary" onClick={() => setConfirmOpen(true)} disabled={!formReady || Boolean(batch && !['completed', 'failed'].includes(batch.status))}><Sparkles size={16} />开始生成候选 · {totalCandidates} 条</button></div></header>
         <div className="vd-source-banner"><div><span className="vd-source-caption">当前来源</span><strong><AudioLines size={15} />AI 原创设计</strong><p>适用于希望创建原创、可长期复用声音身份的品牌、产品、栏目或角色场景。</p></div><div className="vd-batch-summary"><span>声音设计批次</span><strong>{batch?.label || '尚未创建'}</strong><small>{batch ? `${batch.completedCount} / ${batch.totalCount} 条候选` : '开始生成后创建新批次'}</small></div></div>
         {saved && <div className="vd-saved-note"><Check size={13} />来源配置草稿已保存</div>}
         {message && <div className="vd-feedback" role="status">{message}<button type="button" onClick={() => setMessage('')} aria-label="关闭提示"><X size={14} /></button></div>}
@@ -251,7 +282,7 @@ export function VoiceIdentityDesignView({ id, onCenter, onOverview, onReview }: 
       </div>
     </main>
 
-    <div className="vd-actionbar"><button type="button" className="vd-quiet" onClick={onCenter}>取消</button><div><button type="button" className="vd-secondary" onClick={saveDraft}><Save size={14} />保存草稿</button><button type="button" className="vd-primary" onClick={() => setConfirmOpen(true)} disabled={!formReady || Boolean(batch && !['completed', 'failed'].includes(batch.status))}><Sparkles size={15} />开始生成候选 · {totalCandidates} 条</button></div></div>
+    <div className="vd-actionbar"><button type="button" className="vd-quiet" onClick={onCenter}>取消</button><div><button type="button" className="vd-secondary" onClick={() => void saveDraft()}><Save size={14} />保存草稿</button><button type="button" className="vd-primary" onClick={() => setConfirmOpen(true)} disabled={!formReady || Boolean(batch && !['completed', 'failed'].includes(batch.status))}><Sparkles size={15} />开始生成候选 · {totalCandidates} 条</button></div></div>
 
     {playerOpen && <div className="vd-player" role="region" aria-label="全局音频播放器"><div className="vd-player-identity"><div className="vd-player-mark"><AudioLines size={18} /></div><div><strong>{identity.name}</strong><span>AI 原创设计草稿 · 尚未生成候选音频</span></div></div><div className="vd-player-controls"><button type="button" disabled aria-label="暂无音频可播放"><Play size={16} fill="currentColor" /></button><span>0:00</span><input type="range" value="0" min="0" max="100" disabled aria-label="播放进度" /><span>--:--</span></div><div className="vd-player-tail"><Volume2 size={17} /><input type="range" min="0" max="100" value={volume} onChange={event => setVolume(Number(event.target.value))} aria-label="音量" /><button type="button" title="展开播放器" aria-label="展开播放器" onClick={() => setPlayerExpanded(value => !value)}><Maximize2 size={16} /></button><button type="button" title="关闭播放器" aria-label="关闭播放器" onClick={() => setPlayerOpen(false)}><X size={17} /></button></div>{playerExpanded && <div className="vd-player-expanded">尚未生成候选声音，当前没有可试听音频。</div>}</div>}
 

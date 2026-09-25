@@ -94,6 +94,22 @@ export function VoiceIdentitiesView({ globalSearch = '', onUseForGeneration, onC
   const [page, setPage] = useState(1);
 
   useEffect(() => {
+    let live = true;
+    fetch('/api/voice-identities')
+      .then(response => response.ok ? response.json() as Promise<{ identities: VoiceIdentity[] }> : null)
+      .then(result => {
+        if (!live || !result) return;
+        const remote = result.identities;
+        const legacy = readSavedIdentities();
+        const merged = uniqueIdentities([...remote, ...legacy.filter(identity => identity.id.startsWith('new-')), ...INITIAL_IDENTITIES]);
+        setIdentities(merged);
+        try { window.localStorage.setItem('voice-studio-identities-cache', JSON.stringify(remote)); } catch { /* cache is optional */ }
+      })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+
+  useEffect(() => {
     window.localStorage.setItem('voice-studio-identity-drafts', JSON.stringify(identities.filter(identity => identity.id.startsWith('new-'))));
     onCountChange?.(identities.length);
   }, [identities, onCountChange]);
@@ -155,4 +171,20 @@ export function VoiceIdentitiesView({ globalSearch = '', onUseForGeneration, onC
     {detail && <div className="vi-overlay" onMouseDown={() => setDetail(null)}><aside className="vi-detail" onMouseDown={event => event.stopPropagation()} aria-label="声音角色详情"><div className="vi-panel-header"><span>声音角色详情</span><button type="button" onClick={() => setDetail(null)} aria-label="关闭详情"><X size={18} /></button></div><div className="vi-detail-hero"><WaveThumb source={detail.source} /><div><h2>{detail.name}</h2><p>{detail.ownerDescription}</p><span className={`vi-status vi-status--${detail.status === '已发布' ? 'published' : detail.status === '评审中' ? 'review' : detail.status === '草稿' ? 'draft' : 'retired'}`}>{detail.status}</span></div></div><p className="vi-detail-copy">{detail.description}</p><dl><div><dt>归属对象</dt><dd>{detail.ownerType} · {detail.ownerName}</dd></div><div><dt>创建方式</dt><dd>{detail.source}</dd></div><div><dt>语言</dt><dd>{detail.language}</dd></div><div><dt>当前版本</dt><dd>{detail.version}</dd></div><div><dt>授权状态</dt><dd>{detail.license}</dd></div></dl><button className="vi-detail-preview" type="button" onClick={() => { setPreview(detail); setPlayerOpen(true); setDetail(null); }}><Headphones size={16} />试听正式样音</button></aside></div>}
 
   </div>;
+}
+
+function readSavedIdentities(): VoiceIdentity[] {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem('voice-studio-identity-drafts') || '[]');
+    return Array.isArray(saved) ? saved as VoiceIdentity[] : [];
+  } catch { return []; }
+}
+
+function uniqueIdentities(items: VoiceIdentity[]) {
+  const seen = new Set<string>();
+  return items.filter(identity => {
+    if (seen.has(identity.id)) return false;
+    seen.add(identity.id);
+    return true;
+  });
 }

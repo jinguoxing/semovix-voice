@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft, AudioLines, CalendarDays, Check, CheckCircle2, ChevronDown,
   CircleHelp, FileCheck2, FileText, Headphones, Maximize2, Mic, Pause,
@@ -66,7 +66,7 @@ function StatusLine({ label, value, tone = 'pass' }: { label: string; value: str
 }
 
 export function VoiceIdentityHumanCloneView({ id, onCenter, onOverview }: { id: string; onCenter: () => void; onOverview: () => void }) {
-  const [identity] = useState(() => readIdentity(id));
+  const [identity, setIdentity] = useState(() => readIdentity(id));
   const [referenceText, setReferenceText] = useState(() => readReferenceText(id));
   const [message, setMessage] = useState('');
   const [saved, setSaved] = useState(false);
@@ -75,20 +75,44 @@ export function VoiceIdentityHumanCloneView({ id, onCenter, onOverview }: { id: 
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(76);
 
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/voice-identities/${encodeURIComponent(id)}`)
+      .then(response => response.ok ? response.json() as Promise<{ identity: { name: string; ownerName: string; language: string; source: string } }> : null)
+      .then(result => {
+        if (!live || !result?.identity) return;
+        setIdentity({ name: result.identity.name, owner: result.identity.ownerName, language: result.identity.language === '中文' ? '中文（普通话）' : result.identity.language, source: result.identity.source });
+      })
+      .catch(() => undefined);
+    fetch(`/api/voice-identities/${encodeURIComponent(id)}/source-config`)
+      .then(response => response.ok ? response.json() as Promise<{ config: { source: string; configuration: { referenceText?: string } } | null }> : null)
+      .then(result => {
+        if (live && result?.config?.source === '授权真人克隆' && result.config.configuration.referenceText) setReferenceText(result.config.configuration.referenceText);
+      })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [id]);
+
   const notify = (text: string) => {
     setMessage(text);
     setSaved(false);
   };
 
-  const saveDraft = () => {
+  const saveDraft = async () => {
     try {
+      const response = await fetch(`/api/voice-identities/${encodeURIComponent(id)}/source-config`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: '授权真人克隆', configuration: { referenceText } }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || '授权真人克隆来源配置保存失败。');
       const storageKey = 'voice-studio-human-clone-drafts';
       const current = JSON.parse(window.localStorage.getItem(storageKey) || '{}') as Record<string, { referenceText: string; updatedAt: string }>;
       window.localStorage.setItem(storageKey, JSON.stringify({ ...current, [id]: { referenceText, updatedAt: new Date().toISOString() } }));
       setSaved(true);
       setMessage('授权真人克隆来源配置已保存。');
-    } catch {
-      notify('草稿保存失败，请检查浏览器存储空间。');
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '草稿保存失败，请检查网络连接。');
     }
   };
 
@@ -119,7 +143,7 @@ export function VoiceIdentityHumanCloneView({ id, onCenter, onOverview }: { id: 
             <p>归档声音授权，采集高质量参考样本，并生成可进入后续验证的首次克隆样音。</p>
           </div>
           <div className="vch-header-actions">
-            <button type="button" className="vch-secondary" onClick={saveDraft}><Save size={15} />保存草稿</button>
+            <button type="button" className="vch-secondary" onClick={() => void saveDraft()}><Save size={15} />保存草稿</button>
             <button type="button" className="vch-quiet" onClick={onCenter}>取消</button>
             <button type="button" className="vch-primary" onClick={() => notify('克隆样音任务已准备就绪，确认后将使用当前参考样本生成。')}><AudioLines size={16} />生成克隆样音</button>
           </div>
@@ -227,7 +251,7 @@ export function VoiceIdentityHumanCloneView({ id, onCenter, onOverview }: { id: 
       </div>
     </main>
 
-    <div className="vch-actionbar"><button type="button" className="vch-quiet" onClick={onCenter}>取消</button><div><button type="button" className="vch-secondary" onClick={saveDraft}><Save size={14} />保存草稿</button><button type="button" className="vch-primary" onClick={() => notify('克隆样音任务已准备就绪，确认后将使用当前参考样本生成。')}><AudioLines size={15} />生成克隆样音</button></div></div>
+    <div className="vch-actionbar"><button type="button" className="vch-quiet" onClick={onCenter}>取消</button><div><button type="button" className="vch-secondary" onClick={() => void saveDraft()}><Save size={14} />保存草稿</button><button type="button" className="vch-primary" onClick={() => notify('克隆样音任务已准备就绪，确认后将使用当前参考样本生成。')}><AudioLines size={15} />生成克隆样音</button></div></div>
 
     {playerOpen && <div className="vch-player" role="region" aria-label="参考音频播放器">
       <div className="vch-player-identity"><span className="vch-player-mark"><UserRound size={17} /></span><div><strong>授权讲师 A</strong><span>主参考样本 · speaker_A_reference_01.wav</span></div></div>

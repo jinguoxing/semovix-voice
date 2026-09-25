@@ -15,6 +15,7 @@ import { libraryRouter } from './routes/library';
 import { generationsRouter } from './routes/generations';
 import { voiceDesignRouter } from './routes/voiceDesign';
 import { voiceLifecycleRouter } from './routes/voiceLifecycle';
+import { voiceIdentitiesRouter } from './routes/voiceIdentities';
 
 export function createApp(): express.Express {
   const app = express();
@@ -33,6 +34,7 @@ export function createApp(): express.Express {
   app.use('/api', generationsRouter);
   app.use('/api', voiceDesignRouter);
   app.use('/api', voiceLifecycleRouter);
+  app.use('/api', voiceIdentitiesRouter);
 
   return app;
 }

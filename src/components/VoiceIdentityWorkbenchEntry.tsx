@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ArrowLeft, AudioLines, Check, CircleHelp, FileInput, Headphones, Maximize2, Play, Save, UserRound, Volume2, X } from 'lucide-react';
 import { VoiceWorkspaceSidebar } from './VoiceWorkspaceSidebar';
 import './VoiceIdentityCreateView.css';
@@ -19,7 +19,7 @@ function getDraft(id: string): SavedIdentity | undefined {
 }
 
 export function VoiceIdentityWorkbenchEntry({ id, onBack, onCenter }: { id: string; onBack: () => void; onCenter: () => void }) {
-  const [draft] = useState(() => getDraft(id));
+  const [draft, setDraft] = useState(() => getDraft(id));
   const source = draft?.source === '预置音色' ? 'Provider 预置音色' : draft?.source || 'AI 原创设计';
   const content = SOURCE_CONTENT[source] || SOURCE_CONTENT['AI 原创设计'];
   const Icon = content.icon;
@@ -28,18 +28,35 @@ export function VoiceIdentityWorkbenchEntry({ id, onBack, onCenter }: { id: stri
   const [playerOpen, setPlayerOpen] = useState(true);
   const [playerExpanded, setPlayerExpanded] = useState(false);
   const [volume, setVolume] = useState(80);
-  const saveNote = () => {
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/voice-identities/${encodeURIComponent(id)}`)
+      .then(response => response.ok ? response.json() as Promise<{ identity: SavedIdentity }> : null)
+      .then(result => { if (live && result?.identity) setDraft(result.identity); })
+      .catch(() => undefined);
+    fetch(`/api/voice-identities/${encodeURIComponent(id)}/source-config`)
+      .then(response => response.ok ? response.json() as Promise<{ config: { configuration: { note?: string } } | null }> : null)
+      .then(result => { if (live && result?.config?.configuration.note) setNote(result.config.configuration.note); })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, [id]);
+  const saveNote = async () => {
     try {
+      const response = await fetch(`/api/voice-identities/${encodeURIComponent(id)}/source-config`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source, configuration: { note } }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || '来源工作区保存失败。');
       const drafts = JSON.parse(window.localStorage.getItem('voice-studio-identity-drafts') || '[]') as SavedIdentity[];
       window.localStorage.setItem('voice-studio-identity-drafts', JSON.stringify(drafts.map(item => item.id === id ? { ...item, sourceNote: note, updatedAt: new Date().toISOString() } : item)));
       setFeedback('来源工作区内容已保存。');
-    } catch { setFeedback('保存失败，请检查浏览器存储空间。'); }
+    } catch (error) { setFeedback(error instanceof Error ? error.message : '保存失败，请检查网络连接。'); }
   };
 
   return <div className="voice-create-page vwe-page">
     <VoiceWorkspaceSidebar active="声音来源" name={draft?.name || ''} owner={draft?.ownerName || ''} source={source} language={draft?.form?.language || draft?.language || '未选择'} roleSummary verificationHint="来源配置后可进入" onOverview={onBack} onSource={() => undefined} />
-    <main className="vc-workspace"><div className="vc-content"><button type="button" className="vwe-back" onClick={onCenter}><ArrowLeft size={14} />返回声音角色中心</button><header className="vc-page-header"><div><h1>{content.title}</h1><p>{content.description}</p></div><div className="vc-header-actions"><button type="button" onClick={saveNote}><Save size={14} />保存草稿</button></div></header><div className="vc-info-strip"><CircleHelp size={15} /><span>{draft?.name || '当前声音角色'}已创建为草稿。四种声音来源共享同一套工作台框架，此处配置当前来源。</span></div>{feedback && <div className="vc-feedback" role="status">{feedback}<button type="button" onClick={() => setFeedback('')} aria-label="关闭提示"><X size={14} /></button></div>}
-      <div className="vwe-columns"><section className="vc-panel"><div className="vc-panel-heading"><div><h2>{content.section}</h2><p>{draft?.description || '在来源工作区继续完善声音角色。'}</p></div><Icon size={18} /></div><label className="vc-field"><span>工作区备注</span><textarea rows={6} value={note} onChange={event => setNote(event.target.value)} placeholder={content.prompt} /></label><div className="vwe-card-foot"><button type="button" onClick={saveNote}><Save size={14} />保存当前内容</button></div></section><section className="vc-panel"><div className="vc-panel-heading"><div><h2>本来源工作区</h2><p>当前来源需要继续完成的资料和配置。</p></div></div><div className="vwe-source-name"><Icon size={19} />{source}</div><ul>{content.guidance.map(item => <li key={item}><Check size={14} />{item}</li>)}</ul><div className="vc-check-note">验证与发布将根据“{source}”自动切换所需策略。</div></section></div>
+    <main className="vc-workspace"><div className="vc-content"><button type="button" className="vwe-back" onClick={onCenter}><ArrowLeft size={14} />返回声音角色中心</button><header className="vc-page-header"><div><h1>{content.title}</h1><p>{content.description}</p></div><div className="vc-header-actions"><button type="button" onClick={() => void saveNote()}><Save size={14} />保存草稿</button></div></header><div className="vc-info-strip"><CircleHelp size={15} /><span>{draft?.name || '当前声音角色'}已创建为草稿。四种声音来源共享同一套工作台框架，此处配置当前来源。</span></div>{feedback && <div className="vc-feedback" role="status">{feedback}<button type="button" onClick={() => setFeedback('')} aria-label="关闭提示"><X size={14} /></button></div>}
+      <div className="vwe-columns"><section className="vc-panel"><div className="vc-panel-heading"><div><h2>{content.section}</h2><p>{draft?.description || '在来源工作区继续完善声音角色。'}</p></div><Icon size={18} /></div><label className="vc-field"><span>工作区备注</span><textarea rows={6} value={note} onChange={event => setNote(event.target.value)} placeholder={content.prompt} /></label><div className="vwe-card-foot"><button type="button" onClick={() => void saveNote()}><Save size={14} />保存当前内容</button></div></section><section className="vc-panel"><div className="vc-panel-heading"><div><h2>本来源工作区</h2><p>当前来源需要继续完成的资料和配置。</p></div></div><div className="vwe-source-name"><Icon size={19} />{source}</div><ul>{content.guidance.map(item => <li key={item}><Check size={14} />{item}</li>)}</ul><div className="vc-check-note">验证与发布将根据“{source}”自动切换所需策略。</div></section></div>
     </div></main>
     {playerOpen && <div className="vc-player" role="region" aria-label="全局音频播放器"><div className="vc-player-left"><span className="vc-player-icon"><AudioLines size={17} /></span><div><strong>未选择样音</strong><span>尚未选择音频</span></div></div><div className="vc-player-center"><button type="button" disabled aria-label="暂无音频可播放"><Play size={16} fill="currentColor" /></button><span>0:00</span><input type="range" min="0" max="1" value="0" disabled aria-label="播放进度" /><span>--:--</span></div><div className="vc-player-right"><Volume2 size={16} /><input type="range" min="0" max="100" value={volume} onChange={event => setVolume(Number(event.target.value))} aria-label="音量" /><button type="button" onClick={() => setPlayerExpanded(value => !value)} aria-label="展开播放器"><Maximize2 size={16} /></button><button type="button" onClick={() => setPlayerOpen(false)} aria-label="关闭播放器"><X size={17} /></button></div>{playerExpanded && <div className="vc-player-expanded">当前没有可试听的样音。</div>}</div>}
   </div>;
