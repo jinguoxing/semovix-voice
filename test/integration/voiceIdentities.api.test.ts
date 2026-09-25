@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import Database from 'better-sqlite3';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanupTestEnv, setupTestEnv, type TestEnv } from './helpers';
@@ -29,6 +30,10 @@ describe('voice identities API', () => {
     const source = await request(app).get(`/api/voice-identities/${identity.id}/source-config`).expect(200);
     expect(source.body.config.configuration.activeBatchId).toBe('20260924-01');
     await expect(fs.readFile(path.join(env.libraryDir, 'voice-identities', identity.id, 'identity.json'), 'utf8')).resolves.toContain('产品讲解员');
+    const db = new Database(path.join(env.libraryDir, 'library.db'), { readonly: true });
+    expect(db.prepare('SELECT name FROM voice_identities WHERE id = ?').get(identity.id)).toEqual({ name: '产品讲解员' });
+    expect(db.prepare('SELECT source FROM voice_identity_source_configs WHERE identity_id = ?').get(identity.id)).toEqual({ source: 'AI 原创设计' });
+    db.close();
   });
 
   it('accepts incomplete drafts but rejects a source type mismatch', async () => {

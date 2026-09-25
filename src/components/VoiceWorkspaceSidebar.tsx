@@ -19,6 +19,7 @@ type Props = {
   sourceHint?: string;
   onOverview?: () => void;
   onSource?: () => void;
+  onValidation?: () => void;
 };
 
 const NAV = [
@@ -30,7 +31,7 @@ const NAV = [
   { label: '设置', icon: Settings2 },
 ] as const;
 
-export function VoiceWorkspaceSidebar({ active, name, owner, source, status = '草稿', createdAt = '今天 09:20', isNew = false, roleSummary = false, avatar = false, language, verificationHint, sourceHint, onOverview, onSource }: Props) {
+export function VoiceWorkspaceSidebar({ active, name, owner, source, status = '草稿', createdAt = '今天 09:20', isNew = false, roleSummary = false, avatar = false, language, verificationHint, sourceHint, onOverview, onSource, onValidation }: Props) {
   const values = roleSummary ? [
     ['角色名称', name || '未命名声音角色'], ['归属对象', owner || '未选择'],
     ['主要语言', language || '未选择'], ['来源', source || '未选择'], ['状态', status],
@@ -44,8 +45,8 @@ export function VoiceWorkspaceSidebar({ active, name, owner, source, status = '�
     <nav>{NAV.map(({ label, icon: Icon }) => {
       const current = active === label;
       const hint = isNew ? label === '声音来源' ? '保存后可配置' : label === '验证与发布' ? '尚不可用' : label === '版本' ? '尚无版本' : label === '使用记录' ? '暂无' : undefined : label === '声音来源' ? sourceHint : label === '验证与发布' ? verificationHint || '尚不可用' : label === '版本' ? '尚无版本' : label === '使用记录' ? '暂无' : undefined;
-      const click = label === '概览' ? onOverview : label === '声音来源' && !isNew ? onSource : undefined;
-      return <button type="button" key={label} aria-current={current ? 'page' : undefined} className={current ? 'is-active' : ''} onClick={click} disabled={Boolean(hint && label !== '声音来源' && !current) || !click && !current}><Icon size={16} strokeWidth={1.7} /><span>{label}{hint && <small>{hint}</small>}</span>{current && <i />}</button>;
+      const click = label === '概览' ? onOverview : label === '声音来源' && !isNew ? onSource : label === '验证与发布' && !isNew ? onValidation : undefined;
+      return <button type="button" key={label} aria-current={current ? 'page' : undefined} className={current ? 'is-active' : ''} onClick={click} disabled={!click && !current}><Icon size={16} strokeWidth={1.7} /><span>{label}{hint && <small>{hint}</small>}</span>{current && <i />}</button>;
     })}</nav>
     <div className="vws-sidebar-note">统一工作台 · 来源决定中间工作区</div>
   </aside>;

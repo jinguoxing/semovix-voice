@@ -33,6 +33,8 @@ describe('migrate()', () => {
     ).all() as Array<{ name: string }>).map(r => r.name);
     expect(tables).toContain('items');
     expect(tables).toContain('folders');
+    expect(tables).toContain('voice_identities');
+    expect(tables).toContain('voice_identity_source_configs');
     expect(tables).toContain('schema_migrations');
 
     const versions = (db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: string }>)

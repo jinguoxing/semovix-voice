@@ -10,6 +10,8 @@ import { fileURLToPath } from 'url';
 import express from 'express';
 import { createApp } from './server/app';
 import { getConfig } from './server/config';
+import { resumeProviderPreviewJobs } from './server/routes/voiceAdditionalSources';
+import { resumeSourceValidationJobs } from './server/routes/voiceSourceLifecycle';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +19,9 @@ const __dirname = path.dirname(__filename);
 async function startServer() {
   const app = createApp();
   const { port, isProduction } = getConfig();
+  // 试听任务的状态已经持久化；启动时恢复因重启中断的 Provider 任务。
+  void resumeProviderPreviewJobs().catch(error => console.error('无法恢复 Provider 试听任务:', error));
+  void resumeSourceValidationJobs().catch(error => console.error('无法恢复来源验证任务:', error));
 
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');
@@ -26,7 +31,9 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
+    // 生产包输出为 dist/server.mjs；静态文件与入口在同一目录。
+    // 开发入口仍位于项目根，因此不能沿用固定的 root/dist 推导。
+    const distPath = __dirname;
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.resolve(distPath, 'index.html'));

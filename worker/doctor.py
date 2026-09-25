@@ -25,10 +25,22 @@ import shutil
 import socket
 import sys
 import tempfile
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# 只关闭 librosa 的可选 Numba JIT 缓存，不影响 Qwen 的 PyTorch 推理。
+# Python 3.12 + 部分 librosa/numba 组合否则会在 qwen_tts 导入阶段失败。
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+_WORKER_ROOT = Path(__file__).resolve().parent
+load_dotenv(_WORKER_ROOT.parent / ".env", override=False)
+load_dotenv(_WORKER_ROOT / ".env", override=False)
 
 WORKER_PORT = int(os.environ.get("SEMOVIX_WORKER_PORT", "8800"))
 DEFAULT_TTS_CKPT = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 TTS_CKPT = os.environ.get("SEMOVIX_TTS_CKPT", DEFAULT_TTS_CKPT)
+VOICE_DESIGN_CKPT = os.environ.get("SEMOVIX_VOICE_DESIGN_CKPT", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
+VOICE_CLONE_CKPT = os.environ.get("SEMOVIX_VOICE_CLONE_CKPT", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 
 results: list[tuple[str, str, str]] = []  # (status, name, detail)
 
@@ -79,20 +91,20 @@ def check_module(name: str, label: str, on_fail: str = "FAIL") -> None:
         record(on_fail, label, f"未安装（pip install -r requirements-base.txt）")
 
 
-def check_tts_checkpoint() -> None:
-    if os.path.isdir(TTS_CKPT):
-        record("PASS", "TTS checkpoint", f"本地目录 {TTS_CKPT}")
+def check_checkpoint(label: str, checkpoint: str) -> None:
+    if os.path.isdir(checkpoint):
+        record("PASS", label, f"本地目录 {checkpoint}")
         return
-    if "/" in TTS_CKPT and not os.path.exists(TTS_CKPT):
+    if "/" in checkpoint and not os.path.exists(checkpoint):
         # 形如 org/name 的 HuggingFace repo id：首次运行需联网下载
         record(
             "WARN",
-            "TTS checkpoint",
-            f"HuggingFace repo id {TTS_CKPT}（首次运行将联网下载，约 4-5GB；"
-            f"本机已有权重可用 SEMOVIX_TTS_CKPT 指向本地目录）",
+            label,
+            f"HuggingFace repo id {checkpoint}（首次运行将联网下载，约 4-5GB；"
+            "本机已有权重可通过对应 SEMOVIX_*_CKPT 指向本地目录）",
         )
         return
-    record("FAIL", "TTS checkpoint", f"SEMOVIX_TTS_CKPT 指向的路径不存在: {TTS_CKPT}")
+    record("FAIL", label, f"checkpoint 路径不存在: {checkpoint}")
 
 
 def check_ffmpeg() -> None:
@@ -129,7 +141,7 @@ def check_writable() -> None:
 def main() -> int:
     print("Semovix Voice Worker 环境体检")
     print(f"  Python: {sys.executable}")
-    print(f"  TTS checkpoint: {TTS_CKPT}")
+    print(f"  CustomVoice checkpoint: {TTS_CKPT}")
     print("-" * 64)
 
     check_python()
@@ -138,7 +150,9 @@ def main() -> int:
     check_module("transformers", "transformers")
     check_module("librosa", "librosa", on_fail="WARN")
     check_module("soundfile", "soundfile", on_fail="WARN")
-    check_tts_checkpoint()
+    check_checkpoint("CustomVoice checkpoint", TTS_CKPT)
+    check_checkpoint("VoiceDesign checkpoint", VOICE_DESIGN_CKPT)
+    check_checkpoint("Base checkpoint", VOICE_CLONE_CKPT)
     check_ffmpeg()
     check_port()
     check_writable()

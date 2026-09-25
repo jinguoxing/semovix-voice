@@ -11,7 +11,7 @@ import { EngineValidationError } from './errors';
 
 /* ---------------- 冷启动状态机（P01） ---------------- */
 
-export type WorkerEngineId = 'qwen_tts' | 'voice_design' | 'whisper_asr';
+export type WorkerEngineId = 'qwen_tts' | 'voice_design' | 'voice_clone' | 'whisper_asr';
 export type WorkerEngineState = 'cold' | 'loading' | 'ready' | 'error';
 
 export interface WorkerEngineSnapshot {
@@ -24,12 +24,13 @@ export interface WorkerStatus {
   reachable: boolean;
   qwen_tts: WorkerEngineSnapshot;
   voice_design: WorkerEngineSnapshot;
+  voice_clone: WorkerEngineSnapshot;
   whisper_asr: WorkerEngineSnapshot;
 }
 
 function unreachable(): WorkerStatus {
   const cold: WorkerEngineSnapshot = { state: 'cold', available: false, error: null };
-  return { reachable: false, qwen_tts: { ...cold }, voice_design: { ...cold }, whisper_asr: { ...cold } };
+  return { reachable: false, qwen_tts: { ...cold }, voice_design: { ...cold }, voice_clone: { ...cold }, whisper_asr: { ...cold } };
 }
 
 /** 兼容旧 Worker 健康载荷（无 state 字段时按 available 推断），升级窗口期内不至于误判 */
@@ -54,7 +55,7 @@ export async function getWorkerStatus(): Promise<WorkerStatus> {
       const state = normalizeEngineState(raw?.state, raw?.available);
       return { state, available: state === 'ready', error: raw?.error ?? null };
     };
-    return { reachable: true, qwen_tts: snap('qwen_tts'), voice_design: snap('voice_design'), whisper_asr: snap('whisper_asr') };
+    return { reachable: true, qwen_tts: snap('qwen_tts'), voice_design: snap('voice_design'), voice_clone: snap('voice_clone'), whisper_asr: snap('whisper_asr') };
   } catch {
     return unreachable();
   }
@@ -66,7 +67,7 @@ export interface WarmupResult {
 }
 
 /** Worker 预热路由段（引擎 ID ≠ 路由名：qwen_tts → /warmup/qwen，whisper_asr → /warmup/whisper） */
-const WARMUP_PATH: Record<WorkerEngineId, string> = { qwen_tts: 'qwen', voice_design: 'voice-design', whisper_asr: 'whisper' };
+const WARMUP_PATH: Record<WorkerEngineId, string> = { qwen_tts: 'qwen', voice_design: 'voice-design', voice_clone: 'voice-clone', whisper_asr: 'whisper' };
 
 /**
  * 显式预热（POST /warmup/{qwen|whisper}）：cold → 触发加载；loading → 幂等；
@@ -272,6 +273,25 @@ export async function qwenWorkerVoiceDesign(req: {
     signal: AbortSignal.timeout(600_000),
   });
   if (!res.ok) throw await workerError(res, `VoiceDesign Worker 合成失败 (HTTP ${res.status})`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** Base checkpoint voice clone. Reference audio remains binary multipart data end-to-end. */
+export async function qwenWorkerVoiceClone(req: {
+  text: string;
+  referenceText: string;
+  referenceAudio: Buffer;
+  language: 'Chinese' | 'English' | 'Auto';
+}): Promise<Buffer> {
+  const form = new FormData();
+  form.append('file', new Blob([new Uint8Array(req.referenceAudio)], { type: 'audio/wav' }), 'reference.wav');
+  form.append('text', req.text);
+  form.append('reference_text', req.referenceText);
+  form.append('language', req.language);
+  const res = await fetch(`${workerUrl()}/tts/voice-clone`, {
+    method: 'POST', body: form, signal: AbortSignal.timeout(600_000),
+  });
+  if (!res.ok) throw await workerError(res, `Qwen Base 克隆样音生成失败 (HTTP ${res.status})`);
   return Buffer.from(await res.arrayBuffer());
 }
 

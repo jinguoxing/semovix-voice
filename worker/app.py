@@ -5,6 +5,7 @@ Semovix Voice Studio - Python FastAPI Worker（硬性约束 #14）
 独立进程承载本地引擎，Node 后端只与本 Worker 通信：
   - Qwen3-TTS (Qwen3-TTS-12Hz-1.7B-CustomVoice)
   - Qwen3-TTS (Qwen3-TTS-12Hz-1.7B-VoiceDesign)
+  - Qwen3-TTS (Qwen3-TTS-12Hz-1.7B-Base, 授权真人克隆)
   - Whisper   (openai/whisper-large-v3-turbo)
 
 引擎冷启动状态机（P01）：
@@ -30,17 +31,26 @@ import threading
 import wave
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
+
+# 与 Node 服务使用同一份项目环境配置。先保留进程显式传入的变量，再加载
+# worker/.env 与项目根 .env，便于本机路径和部署密钥都只维护一处。
+_WORKER_ROOT = Path(__file__).resolve().parent
+load_dotenv(_WORKER_ROOT.parent / ".env", override=False)
+load_dotenv(_WORKER_ROOT / ".env", override=False)
 
 # 模型 checkpoint：默认 HuggingFace repo id（可移植；首次启动自动下载）。
 # 本机已有权重时用 SEMOVIX_TTS_CKPT 指向本地目录，避免重复下载。
 DEFAULT_TTS_CKPT = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 TTS_CKPT = os.environ.get("SEMOVIX_TTS_CKPT", DEFAULT_TTS_CKPT)
 VOICE_DESIGN_CKPT = os.environ.get("SEMOVIX_VOICE_DESIGN_CKPT", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
+VOICE_CLONE_CKPT = os.environ.get("SEMOVIX_VOICE_CLONE_CKPT", "Qwen/Qwen3-TTS-12Hz-1.7B-Base")
 ASR_MODEL_ID = os.environ.get("SEMOVIX_ASR_MODEL", "openai/whisper-large-v3-turbo")
 
 app = FastAPI(title="Semovix Voice Worker", version="1.1.0")
@@ -77,8 +87,10 @@ class EngineState:
 _TTS = EngineState(id="qwen_tts")
 _VOICE_DESIGN = EngineState(id="voice_design")
 _VOICE_DESIGN_INFER_LOCK = threading.Lock()
+_VOICE_CLONE = EngineState(id="voice_clone")
+_VOICE_CLONE_INFER_LOCK = threading.Lock()
 _ASR = EngineState(id="whisper_asr")
-_ENGINES: dict[str, EngineState] = {"qwen_tts": _TTS, "voice_design": _VOICE_DESIGN, "whisper_asr": _ASR}
+_ENGINES: dict[str, EngineState] = {"qwen_tts": _TTS, "voice_design": _VOICE_DESIGN, "voice_clone": _VOICE_CLONE, "whisper_asr": _ASR}
 
 
 def _pick_device() -> str:
@@ -122,6 +134,19 @@ def _build_voice_design() -> dict[str, Any]:
     return {"model": model, "device": device, "checkpoint": VOICE_DESIGN_CKPT}
 
 
+def _build_voice_clone() -> dict[str, Any]:
+    """Base 单独加载；真人克隆不能误用 CustomVoice 或 VoiceDesign checkpoint。"""
+    import torch
+    from qwen_tts import Qwen3TTSModel
+
+    device = _pick_device()
+    dtype = torch.bfloat16 if device == "mps" else torch.float32
+    model = Qwen3TTSModel.from_pretrained(
+        VOICE_CLONE_CKPT, device_map=device, dtype=dtype, attn_implementation=None
+    )
+    return {"model": model, "device": device, "checkpoint": VOICE_CLONE_CKPT}
+
+
 def _build_asr() -> dict[str, Any]:
     """真实加载 Whisper（测试通过替换 _BUILDERS 注入伪模型）"""
     import torch
@@ -134,7 +159,7 @@ def _build_asr() -> dict[str, Any]:
     return {"model": model, "processor": processor, "device": device, "dtype": dtype}
 
 
-_BUILDERS: dict[str, Callable[[], dict[str, Any]]] = {"qwen_tts": _build_tts, "voice_design": _build_voice_design, "whisper_asr": _build_asr}
+_BUILDERS: dict[str, Callable[[], dict[str, Any]]] = {"qwen_tts": _build_tts, "voice_design": _build_voice_design, "voice_clone": _build_voice_clone, "whisper_asr": _build_asr}
 
 
 def _load_engine(es: EngineState) -> None:
@@ -184,7 +209,7 @@ def _snapshot(es: EngineState) -> dict[str, Any]:
     }
 
 
-_WARMUP_PATH = {"qwen_tts": "qwen", "voice_design": "voice-design", "whisper_asr": "whisper"}
+_WARMUP_PATH = {"qwen_tts": "qwen", "voice_design": "voice-design", "voice_clone": "voice-clone", "whisper_asr": "whisper"}
 
 
 def _require_ready(es: EngineState) -> None:
@@ -211,7 +236,7 @@ def _require_ready(es: EngineState) -> None:
 class TtsRequest(BaseModel):
     text: str = Field(min_length=1)
     speaker: str = Field(min_length=1)
-    language: str = "Auto"
+    language: str = "auto"
     instruct: Optional[str] = None
 
 
@@ -259,7 +284,11 @@ def tts_qwen(req: TtsRequest) -> Response:
                 "speakers": speakers,
             },
         )
-    if req.language not in (_TTS.languages or []) and req.language != "Auto":
+    # 不同 Qwen checkpoint 会返回 `auto/chinese` 或 `Auto/Chinese`。由运行时
+    # 目录做大小写无关匹配，再把模型返回的精确值传回推理层，不能写死一套枚举。
+    language_by_key = {str(language).casefold(): str(language) for language in (_TTS.languages or [])}
+    language = language_by_key.get(req.language.strip().casefold())
+    if not language:
         raise HTTPException(
             status_code=400,
             detail={
@@ -273,7 +302,7 @@ def tts_qwen(req: TtsRequest) -> Response:
     try:
         wavs, sr = _TTS.model.generate_custom_voice(
             text=req.text.strip(),
-            language=req.language,
+            language=language,
             speaker=req.speaker,
             instruct=(req.instruct or "").strip() or None,
         )
@@ -304,6 +333,40 @@ def tts_voice_design(req: VoiceDesignRequest) -> Response:
             raise RuntimeError("模型未返回音频")
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail={"error": f"{type(e).__name__}: {e}", "code": "voice_design_failed", "engine": "voice_design"})
+    return Response(content=_float_to_wav_bytes(wavs[0], sr), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
+
+
+@app.post("/tts/voice-clone")
+async def tts_voice_clone(
+    file: UploadFile,
+    text: str = Form(...),
+    reference_text: str = Form(...),
+    language: str = Form("Chinese"),
+) -> Response:
+    """用 Base checkpoint 的 ICL reference audio + transcript 生成一次克隆样音。"""
+    _require_ready(_VOICE_CLONE)
+    if language not in ("Chinese", "English", "Auto"):
+        raise HTTPException(status_code=400, detail={"error": f"不支持的语言: {language}", "code": "unsupported_language", "engine": "voice_clone"})
+    if not text.strip() or not reference_text.strip():
+        raise HTTPException(status_code=400, detail={"error": "测试文本和参考文本不能为空", "code": "invalid_request", "engine": "voice_clone"})
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail={"error": "参考音频为空", "code": "invalid_request", "engine": "voice_clone"})
+    try:
+        import librosa
+        speech, sample_rate = librosa.load(io.BytesIO(audio_bytes), sr=None, mono=True)
+        if len(speech) == 0:
+            raise ValueError("参考音频没有有效采样")
+        with _VOICE_CLONE_INFER_LOCK:
+            wavs, sr = _VOICE_CLONE.model.generate_voice_clone(
+                text=text.strip(), language=language, ref_audio=(speech, sample_rate), ref_text=reference_text.strip()
+            )
+        if not wavs:
+            raise RuntimeError("模型未返回音频")
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail={"error": f"{type(e).__name__}: {e}", "code": "voice_clone_failed", "engine": "voice_clone"})
     return Response(content=_float_to_wav_bytes(wavs[0], sr), media_type="audio/wav", headers={"X-Sample-Rate": str(sr)})
 
 
@@ -379,6 +442,7 @@ def health() -> JSONResponse:
             "engines": {
                 "qwen_tts": {**_snapshot(_TTS), "checkpoint": _TTS.checkpoint or TTS_CKPT},
                 "voice_design": {**_snapshot(_VOICE_DESIGN), "checkpoint": _VOICE_DESIGN.checkpoint or VOICE_DESIGN_CKPT},
+                "voice_clone": {**_snapshot(_VOICE_CLONE), "checkpoint": _VOICE_CLONE.checkpoint or VOICE_CLONE_CKPT},
                 "whisper_asr": {**_snapshot(_ASR), "model": ASR_MODEL_ID},
             },
         }
@@ -412,6 +476,11 @@ def warmup_qwen() -> JSONResponse:
 @app.post("/warmup/voice-design")
 def warmup_voice_design() -> JSONResponse:
     return _warmup_response(_VOICE_DESIGN)
+
+
+@app.post("/warmup/voice-clone")
+def warmup_voice_clone() -> JSONResponse:
+    return _warmup_response(_VOICE_CLONE)
 
 
 @app.post("/warmup/whisper")

@@ -62,6 +62,15 @@ class FakeVoiceDesignModel:
         return [np.zeros(2400, dtype=np.float32)], 24000
 
 
+class FakeVoiceCloneModel:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def generate_voice_clone(self, text, language, ref_audio, ref_text):
+        self.calls.append({"text": text, "language": language, "ref_audio_rate": ref_audio[1], "ref_text": ref_text})
+        return [np.zeros(2400, dtype=np.float32)], 24000
+
+
 class FakeAsrProcessor:
     def __init__(self):
         self.speech_len = -1
@@ -101,7 +110,10 @@ class FakeLibrosaModule:
 
     @staticmethod
     def load(buf, sr, mono):
-        assert sr == 16000 and mono is True
+        assert mono is True
+        if sr is None:
+            return np.zeros(24000, dtype=np.float32), 24000
+        assert sr == 16000
         return np.zeros(int(16000 * FakeLibrosaModule.duration_s), dtype=np.float32), 16000
 
 
@@ -138,6 +150,25 @@ def test_voice_design_uses_its_own_model_and_outputs_wav(monkeypatch):
     assert result.content[:4] == b"RIFF"
     assert model.calls == [request]
     assert client.get("/health").json()["engines"]["voice_design"]["state"] == "ready"
+
+
+def test_voice_clone_uses_base_engine_and_requires_reference_audio(monkeypatch):
+    clone = worker.EngineState(id="voice_clone")
+    model = FakeVoiceCloneModel()
+    monkeypatch.setattr(worker, "_VOICE_CLONE", clone)
+    monkeypatch.setitem(worker._BUILDERS, "voice_clone", lambda: {"model": model, "device": "cpu", "checkpoint": "fake-base"})
+    monkeypatch.setitem(sys.modules, "librosa", FakeLibrosaModule)
+
+    cold = client.post("/tts/voice-clone", files=wav_form(), data={"text": "测试文本", "reference_text": "参考文本", "language": "Chinese"})
+    assert cold.status_code == 503
+    assert cold.json()["detail"]["engine"] == "voice_clone"
+
+    assert client.post("/warmup/voice-clone").status_code == 202
+    wait_for_state(clone, "ready")
+    result = client.post("/tts/voice-clone", files=wav_form(), data={"text": "测试文本", "reference_text": "参考文本", "language": "Chinese"})
+    assert result.status_code == 200
+    assert result.content[:4] == b"RIFF"
+    assert model.calls == [{"text": "测试文本", "language": "Chinese", "ref_audio_rate": 24000, "ref_text": "参考文本"}]
 
 
 class GatedBuilder:
@@ -351,6 +382,13 @@ class TestTtsEndpoint:
         detail = r.json()["detail"]
         assert detail["code"] == "unsupported_language"
         assert detail["languages"] == ["Auto", "Chinese", "English"]
+
+    def test_normalizes_language_to_runtime_catalog_casing(self, engines, monkeypatch):
+        payload = warmup_until_ready(monkeypatch, engines)
+        engines.tts.languages = ["auto", "chinese", "english"]
+        r = client.post("/tts/qwen", json={"text": SMOKE_TEXT, "speaker": "uncle_fu", "language": "Chinese"})
+        assert r.status_code == 200
+        assert payload["model"].calls[-1]["language"] == "chinese"
 
 
 # ---------------- ASR 端点 ----------------

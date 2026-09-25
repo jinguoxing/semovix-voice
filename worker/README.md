@@ -7,6 +7,7 @@
 |---|---|---|
 | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`（HF repo id 或本地目录） | MPS / CUDA / CPU 自动选择 |
 | Qwen3-TTS VoiceDesign | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign`（HF repo id 或本地目录） | MPS / CUDA / CPU 自动选择 |
+| Qwen3-TTS Base（真人克隆） | `Qwen/Qwen3-TTS-12Hz-1.7B-Base`（HF repo id 或本地目录） | MPS / CUDA / CPU 自动选择 |
 | Whisper | `openai/whisper-large-v3-turbo` | MPS / CUDA / CPU 自动选择 |
 
 ## 环境体检
@@ -36,7 +37,9 @@ cd worker
 python -m uvicorn app:app --host 127.0.0.1 --port 8800
 ```
 
-Node 侧默认连接 `http://127.0.0.1:8800`，可用 `SEMOVIX_WORKER_URL` 覆盖。
+Node 侧默认连接 `http://127.0.0.1:8800`，可用 `SEMOVIX_WORKER_URL` 覆盖。Worker 会依次读取项目根目录 `.env` 和 `worker/.env`，并保留进程已经传入的环境变量；因此 Node 与 Worker 可以共享 checkpoint 路径配置。
+启动器会在监听端口前验证 `torch`、`qwen_tts`、`transformers` 与 `librosa`。任一依赖缺失会直接退出并提示安装命令，不会启动一个只能返回引擎错误的半可用 Worker。
+为兼容部分 Python 3.12 的 librosa/numba 组合，启动器默认设置 `NUMBA_DISABLE_JIT=1`，避免导入阶段的 Numba 缓存定位错误；该设置只影响 librosa 的可选 JIT 缓存，不影响 Qwen 的 PyTorch 推理。已验证兼容的环境可设 `SEMOVIX_NUMBA_DISABLE_JIT=0` 覆盖。
 
 ## 端点
 
@@ -45,10 +48,12 @@ Node 侧默认连接 `http://127.0.0.1:8800`，可用 `SEMOVIX_WORKER_URL` 覆�
 | GET | `/health` | 引擎冷启动状态 `{state: cold\|loading\|ready\|error}`（永不触发加载） |
 | POST | `/warmup/qwen` | 显式预热 TTS：ready→200；cold/loading→202 {retry}；error→503 {retry} 并自动重载 |
 | POST | `/warmup/voice-design` | 独立预热 VoiceDesign；不会复用 CustomVoice 权重 |
+| POST | `/warmup/voice-clone` | 独立预热 Base 真人克隆模型 |
 | POST | `/warmup/whisper` | 同上（ASR） |
 | GET | `/voices` | **Qwen 官方 speaker 精确 ID**（模型运行时 `get_supported_speakers()`，如 `uncle_fu`；硬性约束 #6）；未就绪 → 503 engine_not_ready |
 | POST | `/tts/qwen` | `{"text","speaker","language"?,"instruct"?}` → `audio/wav` 字节流（非 Base64；硬性约束 #7） |
 | POST | `/tts/voice-design` | `{"text","instruct","language"?,"seed"?}` → `audio/wav` 字节流；仅使用 VoiceDesign 模型 |
+| POST | `/tts/voice-clone` | multipart：`file`、`reference_text`、`text`、`language` → `audio/wav`；仅使用 Base 模型 |
 | POST | `/asr/whisper` | multipart `file` + `language=auto|zh|en` → `{"transcript","language","duration"}` |
 
 错误结构统一为 `{"detail": {"error", "code", "engine", ...}}`：
@@ -61,6 +66,7 @@ Node 侧默认连接 `http://127.0.0.1:8800`，可用 `SEMOVIX_WORKER_URL` 覆�
 |---|---|---|
 | `SEMOVIX_TTS_CKPT` | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | Qwen3-TTS checkpoint（HF repo id 或本地目录） |
 | `SEMOVIX_VOICE_DESIGN_CKPT` | `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | VoiceDesign checkpoint（HF repo id 或本地目录） |
+| `SEMOVIX_VOICE_CLONE_CKPT` | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | 真人克隆 Base checkpoint（HF repo id 或本地目录） |
 | `SEMOVIX_ASR_MODEL` | `openai/whisper-large-v3-turbo` | Whisper 模型 |
 | `SEMOVIX_WORKER_URL` | `http://127.0.0.1:8800` | Node 侧连接地址（server/config.ts） |
 | `SEMOVIX_WORKER_PORT` | `8800` | Worker 监听端口（启动器读取） |

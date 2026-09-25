@@ -70,11 +70,21 @@ describe('VoiceDesign batch API', () => {
     expect(result.body.status).toBe('completed');
     expect(result.body.completedCount).toBe(2);
     expect(result.body.snapshot.model).toBe('Qwen3-TTS-12Hz-1.7B-VoiceDesign');
-    expect(result.body.snapshot.reference).toBe(snapshot.reference);
-    expect(result.body.candidates.map((item: { seed: number }) => item.seed)).toEqual([20260924, 20260924]);
+    expect(result.body.snapshot.reference).toBeUndefined();
+    expect(result.body.candidates[0].seed).toBeUndefined();
+    const stored = JSON.parse(await fs.readFile(path.join(directory, 'voice-design-batches', created.body.id, 'batch.json'), 'utf8'));
+    expect(stored.snapshot.reference).toBe(snapshot.reference);
+    expect(stored.candidates.map((item: { seed: number }) => item.seed)).toEqual([20260924, 20260925]);
 
     const audio = await request(app).get(`/api/voice-design/batches/${created.body.id}/candidates/A-01/audio`);
     expect(audio.status).toBe(200);
     expect(audio.body.toString()).toContain('RIFF');
+
+    const review = await request(app).get(`/api/voice-design/batches/${created.body.id}/review-candidates`).expect(200);
+    expect(review.body.reference).toBe(snapshot.reference);
+    expect(review.body.candidates).toHaveLength(2);
+    expect(JSON.stringify(review.body)).not.toContain('directionId');
+    const anonymousAudio = await request(app).get(`/api/voice-design/batches/${created.body.id}/review-candidates/${review.body.candidates[0].id}/audio`).expect(200);
+    expect(anonymousAudio.body.toString()).toContain('RIFF');
   });
 });

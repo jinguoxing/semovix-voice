@@ -3,6 +3,13 @@ import fs from 'fs/promises';
 import path from 'path';
 import { Router } from 'express';
 import { getConfig } from '../config';
+import {
+  listVoiceIdentities as listStoredVoiceIdentities,
+  readVoiceIdentity as readStoredVoiceIdentity,
+  readVoiceIdentitySourceConfig as readStoredSourceConfig,
+  saveVoiceIdentity as saveStoredVoiceIdentity,
+  saveVoiceIdentitySourceConfig as saveStoredSourceConfig,
+} from '../db/voiceIdentityStore';
 import { fail } from './respond';
 
 export const voiceIdentitiesRouter = Router();
@@ -31,9 +38,10 @@ type Identity = {
   mine: boolean;
   createdAt: string;
   updatedAt: string;
+  [key: string]: unknown;
 };
 
-type SourceConfig = { source: VoiceSource; configuration: Record<string, unknown>; updatedAt: string };
+export type SourceConfig = { source: VoiceSource; configuration: Record<string, unknown>; updatedAt: string };
 
 const identityRoot = () => path.join(getConfig().libraryDir, 'voice-identities');
 const identityDirectory = (id: string) => path.join(identityRoot(), id);
@@ -79,7 +87,7 @@ function makeIdentity(body: Record<string, unknown>, existing?: Identity): Ident
   const visibility = isOneOf(body.visibility, VISIBILITIES) ? body.visibility : existing?.visibility || '团队内可见';
   const name = roleName || '未命名声音角色';
   return {
-    id: existing?.id || `voice-${crypto.randomUUID()}`,
+    id: existing?.id || (typeof body.id === 'string' && SAFE_ID.test(body.id) ? body.id : `voice-${crypto.randomUUID()}`),
     name,
     ownerDescription: asText(body.ownerDescription, existing?.ownerDescription || `${ownerName || '未选择归属对象'}的声音身份`, 280),
     ownerType,
@@ -99,8 +107,24 @@ function makeIdentity(body: Record<string, unknown>, existing?: Identity): Ident
 }
 
 async function readIdentity(id: string): Promise<Identity | null> {
-  try { return JSON.parse(await fs.readFile(identityPath(id), 'utf8')) as Identity; }
-  catch (error: any) { if (error?.code === 'ENOENT') return null; throw error; }
+  const stored = readStoredVoiceIdentity(id) as Identity | null;
+  if (stored) return stored;
+  try {
+    const legacy = JSON.parse(await fs.readFile(identityPath(id), 'utf8')) as Identity;
+    // 首次读取旧 JSON 时写入索引，升级不需要停机迁移整座素材库。
+    saveStoredVoiceIdentity(legacy);
+    return legacy;
+  } catch (error: any) { if (error?.code === 'ENOENT') return null; throw error; }
+}
+
+export async function getVoiceIdentity(id: string) { return readIdentity(id); }
+
+/** 发布动作只允许创建新版本；此函数仅在 Profile 证据归档成功后更新角色索引。 */
+export async function markVoiceIdentityPublished(id: string, version: string): Promise<boolean> {
+  const identity = await readIdentity(id);
+  if (!identity) return false;
+  await writeIdentity({ ...identity, status: '已发布', version, updatedAt: new Date().toISOString() });
+  return true;
 }
 
 async function writeJson(file: string, value: unknown) {
@@ -110,13 +134,49 @@ async function writeJson(file: string, value: unknown) {
   await fs.rename(temp, file);
 }
 
+async function writeIdentity(identity: Identity) {
+  await writeJson(identityPath(identity.id), identity);
+  saveStoredVoiceIdentity(identity);
+}
+
+/**
+ * 读取来源配置时优先使用 SQLite 索引；旧目录中的 JSON 会在首次读取时纳入索引。
+ * 专用来源路由复用此入口，避免 Provider / 导入资产各自维护一份不可见的配置。
+ */
+export async function getVoiceIdentitySourceConfig(id: string): Promise<SourceConfig | null> {
+  const stored = readStoredSourceConfig(id) as SourceConfig | null;
+  if (stored) return stored;
+  try {
+    const config = JSON.parse(await fs.readFile(sourceConfigPath(id), 'utf8')) as SourceConfig;
+    saveStoredSourceConfig(id, config);
+    return config;
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/**
+ * 来源配置同时保留目录快照和 SQLite 索引。媒体证据仍由各来源路由独立归档，
+ * 此处仅保存可查询、可恢复的业务元数据。
+ */
+export async function saveVoiceIdentitySourceConfig(id: string, source: VoiceSource, configuration: Record<string, unknown>): Promise<SourceConfig> {
+  const config: SourceConfig = { source, configuration, updatedAt: new Date().toISOString() };
+  await writeJson(sourceConfigPath(id), config);
+  saveStoredSourceConfig(id, config);
+  return config;
+}
+
 async function listIdentities(): Promise<Identity[]> {
+  const indexed = listStoredVoiceIdentities() as Identity[];
+  const indexedIds = new Set(indexed.map(identity => identity.id));
   try {
     const entries = await fs.readdir(identityRoot(), { withFileTypes: true });
     const identities = await Promise.all(entries.filter(entry => entry.isDirectory() && SAFE_ID.test(entry.name)).map(entry => readIdentity(entry.name)));
-    return identities.filter((identity): identity is Identity => Boolean(identity)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const legacy = identities.filter((identity): identity is Identity => Boolean(identity)).filter(identity => !indexedIds.has(identity.id));
+    return [...indexed, ...legacy].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   } catch (error: any) {
-    if (error?.code === 'ENOENT') return [];
+    if (error?.code === 'ENOENT') return indexed;
     throw error;
   }
 }
@@ -129,7 +189,8 @@ voiceIdentitiesRouter.get('/voice-identities', async (_req, res) => {
 voiceIdentitiesRouter.post('/voice-identities', async (req, res) => {
   try {
     const identity = makeIdentity(req.body || {});
-    await writeJson(identityPath(identity.id), identity);
+    if (await readIdentity(identity.id)) return fail(res, 409, '声音角色 ID 已存在。', 'identity_exists');
+    await writeIdentity(identity);
     res.status(201).json({ identity });
   } catch (error: any) { fail(res, 500, error?.message || '创建声音角色失败。', 'identity_create_failed'); }
 });
@@ -149,7 +210,7 @@ voiceIdentitiesRouter.patch('/voice-identities/:id', async (req, res) => {
     const existing = await readIdentity(req.params.id);
     if (!existing) return fail(res, 404, '声音角色不存在。', 'identity_not_found');
     const identity = makeIdentity(req.body || {}, existing);
-    await writeJson(identityPath(identity.id), identity);
+    await writeIdentity(identity);
     res.json({ identity });
   } catch (error: any) { fail(res, 500, error?.message || '更新声音角色失败。', 'identity_update_failed'); }
 });
@@ -159,8 +220,7 @@ voiceIdentitiesRouter.get('/voice-identities/:id/source-config', async (req, res
   try {
     const identity = await readIdentity(req.params.id);
     if (!identity) return fail(res, 404, '声音角色不存在。', 'identity_not_found');
-    try { res.json({ config: JSON.parse(await fs.readFile(sourceConfigPath(req.params.id), 'utf8')) as SourceConfig }); }
-    catch (error: any) { if (error?.code === 'ENOENT') res.json({ config: null }); else throw error; }
+    res.json({ config: await getVoiceIdentitySourceConfig(req.params.id) });
   } catch (error: any) { fail(res, 500, error?.message || '读取声音来源配置失败。', 'source_config_read_failed'); }
 });
 
@@ -179,8 +239,7 @@ voiceIdentitiesRouter.put('/voice-identities/:id/source-config', async (req, res
     try { size = Buffer.byteLength(JSON.stringify(configuration), 'utf8'); }
     catch { return fail(res, 400, '声音来源配置必须是可序列化对象。', 'invalid_source_config'); }
     if (size > 128 * 1024) return fail(res, 413, '声音来源配置超过 128 KB 限制。', 'source_config_too_large');
-    const config: SourceConfig = { source, configuration, updatedAt: new Date().toISOString() };
-    await writeJson(sourceConfigPath(req.params.id), config);
+    const config = await saveVoiceIdentitySourceConfig(req.params.id, source, configuration);
     res.json({ config });
   } catch (error: any) { fail(res, 500, error?.message || '保存声音来源配置失败。', 'source_config_write_failed'); }
 });

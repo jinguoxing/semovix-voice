@@ -5,8 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "dev:api": "PORT=3210 tsx server.ts",
+    "dev:web": "vite --host 127.0.0.1",
+    "build": "vite build && npm run build:server",
+    "build:server": "esbuild server.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist/server.mjs",
     "start": "tsx server.ts",
+    "start:production": "node dist/server.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",

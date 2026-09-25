@@ -23,8 +23,10 @@ import { VoiceIdentityCreateView, type VoiceSource } from './components/VoiceIde
 import { VoiceIdentityWorkbenchEntry } from './components/VoiceIdentityWorkbenchEntry';
 import { VoiceIdentityDesignView } from './components/VoiceIdentityDesignView';
 import { VoiceIdentityHumanCloneView } from './components/VoiceIdentityHumanCloneView';
+import { VoiceIdentityProviderPresetView } from './components/VoiceIdentityProviderPresetView';
+import { VoiceIdentityImportedProfileView } from './components/VoiceIdentityImportedProfileView';
 import { VoiceIdentityReviewView } from './components/VoiceIdentityReviewView';
-import { VoiceIdentityValidationView } from './components/VoiceIdentityValidationView';
+import { VoiceIdentityValidationEntry } from './components/VoiceIdentityValidationEntry';
 
 import { AudioItem, AudioFolder } from './types/audio';
 import { 
@@ -214,6 +216,16 @@ export default function App() {
     setVoiceReview(null);
     setVoiceValidation({ id, batchId });
     window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}/validation?batchId=${encodeURIComponent(batchId)}`);
+  };
+
+  const returnToVoiceSourceWorkbench = (id: string) => {
+    setCurrentTab('voice-identities');
+    setVoiceCreateOpen(false);
+    setVoiceDesignId(null);
+    setVoiceReview(null);
+    setVoiceValidation(null);
+    setVoiceWorkbenchId(id);
+    window.history.pushState({}, '', `/voice-identities/${encodeURIComponent(id)}?section=source`);
   };
 
   const returnToVoiceSource = (id: string) => {
@@ -511,7 +523,11 @@ export default function App() {
           )}
           {currentTab === 'voice-identities' && voiceWorkbenchId && !voiceCreateOpen && (
             currentVoiceSourceRoute()?.source === '授权真人克隆'
-              ? <VoiceIdentityHumanCloneView id={voiceWorkbenchId} onOverview={openVoiceCenter} onCenter={openVoiceCenter} />
+              ? <VoiceIdentityHumanCloneView id={voiceWorkbenchId} onOverview={openVoiceCenter} onCenter={openVoiceCenter} onValidation={() => openVoiceValidation(voiceWorkbenchId, '')} />
+              : currentVoiceSourceRoute()?.source === 'Provider 预置音色'
+                ? <VoiceIdentityProviderPresetView id={voiceWorkbenchId} onCenter={openVoiceCenter} onValidation={() => openVoiceValidation(voiceWorkbenchId, '')} />
+                : currentVoiceSourceRoute()?.source === '导入已有 Voice Profile'
+                  ? <VoiceIdentityImportedProfileView id={voiceWorkbenchId} onCenter={openVoiceCenter} onValidation={() => openVoiceValidation(voiceWorkbenchId, '')} />
               : <VoiceIdentityWorkbenchEntry id={voiceWorkbenchId} onBack={() => reopenVoiceDraft(voiceWorkbenchId)} onCenter={openVoiceCenter} />
           )}
           {currentTab === 'voice-identities' && voiceDesignId && !voiceCreateOpen && (
@@ -521,7 +537,7 @@ export default function App() {
             <VoiceIdentityReviewView id={voiceReview.id} batchId={voiceReview.batchId} onBack={() => returnToVoiceSource(voiceReview.id)} onEnterValidation={(finalists) => openVoiceValidation(voiceReview.id, voiceReview.batchId)} />
           )}
           {currentTab === 'voice-identities' && voiceValidation && !voiceCreateOpen && (
-            <VoiceIdentityValidationView id={voiceValidation.id} batchId={voiceValidation.batchId} onBack={() => returnToVoiceSource(voiceValidation.id)} />
+            <VoiceIdentityValidationEntry id={voiceValidation.id} batchId={voiceValidation.batchId} onAiBack={() => returnToVoiceSource(voiceValidation.id)} onSourceBack={() => returnToVoiceSourceWorkbench(voiceValidation.id)} />
           )}
           {currentTab === 'voice-identities' && !voiceCreateOpen && !voiceWorkbenchId && !voiceDesignId && !voiceReview && !voiceValidation && (
             <VoiceIdentitiesView

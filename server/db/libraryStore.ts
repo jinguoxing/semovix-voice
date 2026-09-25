@@ -17,12 +17,17 @@ export function libraryDirs(): { root: string; files: string; dbPath: string } {
 }
 
 let db: Database.Database | null = null;
+let openedDbPath: string | null = null;
 
 export function getDb(): Database.Database {
-  if (db) return db;
   const { files, dbPath } = libraryDirs();
+  // 测试、CLI 迁移和多工作区运行都会切换 SEMOVIX_LIBRARY_DIR。不能让旧目录的
+  // SQLite 连接继续承接新请求，否则元数据会落入错误的声音资产库。
+  if (db && openedDbPath === dbPath) return db;
+  if (db) { db.close(); db = null; }
   fs.mkdirSync(files, { recursive: true });
   db = new Database(dbPath);
+  openedDbPath = dbPath;
   db.pragma('journal_mode = WAL');
   migrate(db);
   return db;

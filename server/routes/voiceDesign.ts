@@ -1,9 +1,10 @@
-import { randomInt } from 'crypto';
+import { createHash, randomInt } from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
 import { Router } from 'express';
 import { getConfig } from '../config';
 import { qwenWorkerVoiceDesign, waitForWorkerEngineReady } from '../engines/qwenWorker';
+import { extractPcm16, wavDuration } from '../audio/wav';
 
 export const voiceDesignRouter = Router();
 const MODEL = 'Qwen3-TTS-12Hz-1.7B-VoiceDesign';
@@ -23,7 +24,18 @@ type Snapshot = {
   model: string;
   outputFormat: 'WAV';
 };
-type Candidate = { id: string; directionId: string; seed: number; status: 'pending' | 'running' | 'completed' | 'failed'; file?: string; error?: string };
+type Candidate = {
+  id: string;
+  directionId: string;
+  seed: number;
+  reviewId?: number;
+  duration?: number;
+  peaks?: number[];
+  sha256?: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  file?: string;
+  error?: string;
+};
 type Batch = {
   id: string;
   label: string;
@@ -98,12 +110,18 @@ async function allocateBatch(snapshot: Snapshot): Promise<Batch> {
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   }
   if (!id) throw new Error('无法分配声音设计批次编号');
-  const candidates: Candidate[] = snapshot.directions.flatMap(direction => Array.from({ length: snapshot.candidatesPerDirection }, (_, index) => ({
+  const candidates: Candidate[] = snapshot.directions.flatMap((direction, directionIndex) => Array.from({ length: snapshot.candidatesPerDirection }, (_, index) => ({
     id: `${direction.id}-${String(index + 1).padStart(2, '0')}`,
     directionId: direction.id,
-    seed: snapshot.fixedSeed ? Number(snapshot.seed) + index : randomInt(1, 2147483647),
+    seed: snapshot.fixedSeed ? Number(snapshot.seed) + directionIndex * snapshot.candidatesPerDirection + index : randomInt(1, 2147483647),
     status: 'pending' as const,
   })));
+  const anonymousIds = candidates.map((_, index) => index + 1);
+  for (let index = anonymousIds.length - 1; index > 0; index--) {
+    const swap = randomInt(0, index + 1);
+    [anonymousIds[index], anonymousIds[swap]] = [anonymousIds[swap], anonymousIds[index]];
+  }
+  candidates.forEach((candidate, index) => { candidate.reviewId = anonymousIds[index]; });
   const now = new Date().toISOString();
   const batch: Batch = { id, label: `Batch ${id}`, status: 'queued', createdAt: now, updatedAt: now, completedCount: 0, totalCount: candidates.length, snapshot, candidates };
   await writeBatch(batch);
@@ -125,6 +143,9 @@ async function runBatch(batch: Batch) {
         const filename = `${candidate.id}.wav`;
         await fs.writeFile(path.join(batchRoot(), batch.id, filename), wav);
         candidate.file = filename;
+        candidate.duration = wavDuration(wav);
+        candidate.peaks = waveformPeaks(wav);
+        candidate.sha256 = createHash('sha256').update(wav).digest('hex');
         candidate.status = 'completed';
         batch.completedCount += 1;
       } catch (error) {
@@ -145,6 +166,44 @@ async function runBatch(batch: Batch) {
   }
 }
 
+function waveformPeaks(wav: Buffer, bucketCount = 32) {
+  try {
+    const { pcm } = extractPcm16(wav);
+    const samples = Math.floor(pcm.length / 2);
+    if (!samples) return [];
+    return Array.from({ length: bucketCount }, (_, bucket) => {
+      const start = Math.floor(samples * bucket / bucketCount);
+      const end = Math.max(start + 1, Math.floor(samples * (bucket + 1) / bucketCount));
+      let peak = 0;
+      for (let index = start; index < end; index++) peak = Math.max(peak, Math.abs(pcm.readInt16LE(index * 2)));
+      return Math.round(peak / 32767 * 1000) / 1000;
+    });
+  } catch {
+    return [];
+  }
+}
+
+function publicBatch(batch: Batch) {
+  return {
+    id: batch.id,
+    label: batch.label,
+    status: batch.status,
+    createdAt: batch.createdAt,
+    updatedAt: batch.updatedAt,
+    completedCount: batch.completedCount,
+    totalCount: batch.totalCount,
+    error: batch.error,
+    snapshot: {
+      identityId: batch.snapshot.identityId,
+      identityName: batch.snapshot.identityName,
+      language: batch.snapshot.language,
+      model: batch.snapshot.model,
+      outputFormat: batch.snapshot.outputFormat,
+    },
+    candidates: batch.candidates.map(candidate => ({ id: candidate.id, status: candidate.status, error: candidate.error })),
+  };
+}
+
 voiceDesignRouter.get('/voice-design/status', async (_req, res) => {
   res.json({ model: MODEL, ...(await runtimeStatus()) });
 });
@@ -157,7 +216,7 @@ voiceDesignRouter.post('/voice-design/batches', async (req, res) => {
   try {
     const batch = await allocateBatch(snapshot);
     queue = queue.then(() => runBatch(batch)).catch(error => { console.error('VoiceDesign batch queue:', error); });
-    return res.status(202).json(batch);
+    return res.status(202).json(publicBatch(batch));
   } catch (error) {
     return res.status(500).json({ error: error instanceof Error ? error.message : '批次创建失败', code: 'batch_create_failed' });
   }
@@ -166,7 +225,34 @@ voiceDesignRouter.post('/voice-design/batches', async (req, res) => {
 voiceDesignRouter.get('/voice-design/batches/:id', async (req, res) => {
   const batch = await readBatch(req.params.id);
   if (!batch) return res.status(404).json({ error: '声音设计批次不存在', code: 'not_found' });
-  return res.json(batch);
+  return res.json(publicBatch(batch));
+});
+
+voiceDesignRouter.get('/voice-design/batches/:id/review-candidates', async (req, res) => {
+  const batch = await readBatch(req.params.id);
+  if (!batch) return res.status(404).json({ error: '声音设计批次不存在', code: 'not_found' });
+  if (batch.status !== 'completed') return res.status(409).json({ error: '候选尚未全部生成完成，不能进入匿名评审', code: 'batch_incomplete' });
+  const candidates = batch.candidates
+    .filter(candidate => candidate.status === 'completed' && candidate.file)
+    .map((candidate, index) => ({ id: candidate.reviewId || index + 1, duration: candidate.duration || 0, peaks: candidate.peaks || [] }));
+  if (candidates.length !== batch.totalCount || new Set(candidates.map(candidate => candidate.id)).size !== candidates.length) {
+    return res.status(409).json({ error: '候选批次记录不完整，无法开始匿名评审', code: 'batch_candidates_incomplete' });
+  }
+  return res.json({
+    batch: { id: batch.id, label: batch.label, totalCount: batch.totalCount, language: batch.snapshot.language },
+    reference: batch.snapshot.reference,
+    candidates,
+  });
+});
+
+voiceDesignRouter.get('/voice-design/batches/:id/review-candidates/:reviewId/audio', async (req, res) => {
+  const batch = await readBatch(req.params.id);
+  const reviewId = Number(req.params.reviewId);
+  if (!batch || !Number.isInteger(reviewId) || reviewId < 1) return res.status(404).json({ error: '匿名候选不存在', code: 'not_found' });
+  const candidate = batch.candidates.find(item => (item.reviewId || 0) === reviewId && item.status === 'completed' && item.file);
+  if (!candidate?.file) return res.status(404).json({ error: '候选音频尚未生成', code: 'not_found' });
+  res.setHeader('Content-Type', 'audio/wav');
+  return res.sendFile(path.join(batchRoot(), batch.id, candidate.file));
 });
 
 voiceDesignRouter.get('/voice-design/batches/:id/candidates/:candidateId/audio', async (req, res) => {

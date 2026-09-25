@@ -16,6 +16,9 @@ import { generationsRouter } from './routes/generations';
 import { voiceDesignRouter } from './routes/voiceDesign';
 import { voiceLifecycleRouter } from './routes/voiceLifecycle';
 import { voiceIdentitiesRouter } from './routes/voiceIdentities';
+import { voiceCloneRouter } from './routes/voiceClone';
+import { voiceAdditionalSourcesRouter } from './routes/voiceAdditionalSources';
+import { voiceSourceLifecycleRouter } from './routes/voiceSourceLifecycle';
 
 export function createApp(): express.Express {
   const app = express();
@@ -35,6 +38,9 @@ export function createApp(): express.Express {
   app.use('/api', voiceDesignRouter);
   app.use('/api', voiceLifecycleRouter);
   app.use('/api', voiceIdentitiesRouter);
+  app.use('/api', voiceCloneRouter);
+  app.use('/api', voiceAdditionalSourcesRouter);
+  app.use('/api', voiceSourceLifecycleRouter);
 
   return app;
 }
